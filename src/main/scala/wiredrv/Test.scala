@@ -13,6 +13,10 @@ class Test extends Module with HasDiffTestInterfaces {
   })
   io.in.ready := 1.B
   val difftest = DifftestModule(new DiffArchEvent, delay = 1, dontCare = true)
+  val d0 = DifftestModule(new DiffPhyIntRegState(32), delay = 1, dontCare = true)
+  val d1 = DifftestModule(new DiffCSRState, delay = 1, dontCare = true)
+  val d2 = DifftestModule(new DiffInstrCommit, delay = 1, dontCare = true)
+  val d3 = DifftestModule(new DiffTrapEvent, delay = 1, dontCare = true)
   difftest.valid  := io.in.valid
   difftest.coreid := 0.U
   difftest.interrupt := 0.U
@@ -27,7 +31,7 @@ object Test extends App {
       "-strip-debug-info",
       "-preserve-aggregate=vec",
       "--split-verilog",
-      "-o=generated/Test"
+      "-o=build/rtl"
     )
   )
 }
