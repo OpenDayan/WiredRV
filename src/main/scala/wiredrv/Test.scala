@@ -7,25 +7,21 @@ import chisel3.util._
 import difftest._
 import _root_.circt.stage.ChiselStage
 
-class Test extends Module {
+class Test extends Module with HasDiffTestInterfaces {
   val io = IO(new Bundle {
     val in = Flipped(Decoupled(UInt(32.W)))
   })
   io.in.ready := 1.B
-  val difftest = DifftestModule(new DiffInstrCommit, delay = 1, dontCare = true)
+  val difftest = DifftestModule(new DiffArchEvent, delay = 1, dontCare = true)
   difftest.valid  := io.in.valid
-  difftest.pc     := 0.U
-  difftest.instr  := io.in.bits
-  difftest.skip   := 0.B
-  difftest.isRVC  := 0.B
-  difftest.rfwen  := 1.B
-  difftest.wdest  := 0.U
-  difftest.wpdest := 0.U
+  difftest.coreid := 0.U
+  difftest.interrupt := 0.U
+  difftest.exceptionPC := io.in.bits
 }
 
 object Test extends App {
   ChiselStage.emitSystemVerilog(
-    new Test(),
+    DifftestModule.top(new Test()),
     firtoolOpts = Array(
       "-disable-all-randomization",
       "-strip-debug-info",
