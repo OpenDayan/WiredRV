@@ -1,138 +1,148 @@
 # WiredRV
 
-## 快速开始
+`WiredRV` 是一个基于 Chisel 的 RISC-V 处理器工程，当前主仿真链路基于 `difftest + NEMU`。
 
-默认环境约定：
+## 环境
 
 - `NOOP_HOME` 默认是仓库根目录
 - `NEMU_HOME` 默认是 `/workspace/NEMU`
 - RISC-V 工具链默认是 `/public/riscv-tools/rv64ima/bin/riscv64-unknown-elf-*`
 
-先准备参考模型：
+## NEMU 配置
+
+必须使用：
 
 ```bash
 make -C /workspace/NEMU riscv64-nutshell-ref_defconfig
 make -C /workspace/NEMU -j2
 ```
 
+不要使用 `riscv64-xs-ref_defconfig`。  
+当前 DUT 导出的 difftest 状态较小，`xs-ref` 会打开过多状态，运行时会报：
+
+```text
+ERROR: NEMU (1400B) is configured with different states than DUT (408B).
+```
+
 ## 常用命令
 
-只编译 Scala/Chisel：
+编译 Scala/Chisel：
 
 ```bash
 mill 'wiredrv[6.6.0].compile'
 ```
 
-只生成 Verilog：
+生成 Verilog：
 
 ```bash
 make sim-verilog
 ```
 
-编译 `emu`：
+构建 NEMU 参考模型：
+
+```bash
+make nemu-ref
+```
+
+构建 `emu`：
 
 ```bash
 make emu WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF=Nemu
 ```
 
-运行单个 riscv-tests 用例：
+构建支持波形的 CLI 版本：
 
 ```bash
-make riscv-test-workload ISA_SUITE=rv64ui TEST=simple
-./build/emu -i build/workloads/rv64ui-simple.elf --diff /workspace/NEMU/build/riscv64-nemu-interpreter-so -I 200000
+make emu-cli WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF=Nemu
 ```
 
-每次生成测试时，也会自动把 ELF 反汇编到固定位置：
+编译并启动 CLI：
 
 ```bash
-build/disasm/rv64ui-simple.txt
+make cli TEST=simple WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF=Nemu
 ```
 
-如果只想单独更新反汇编：
+仅启动已编译好的 CLI：
 
 ```bash
-make build/disasm/rv64ui-simple.txt
+make run-cli TEST=simple
 ```
 
-## 一体式调试命令
+## Difftest
 
-推荐直接用：
+运行单个 `riscv-tests`：
+
+```bash
+EMU_MAX_CYCLES=500000 make difftest-riscv-test TEST=simple
+```
+
+直接运行 `emu`：
+
+```bash
+./build/emu \
+  -i build/workloads/rv64ui-simple.elf \
+  --diff /workspace/NEMU/build/riscv64-nemu-interpreter-so \
+  -I 200000
+```
+
+限制最大周期数：
+
+```bash
+./build/emu \
+  -i build/workloads/rv64ui-simple.elf \
+  --diff /workspace/NEMU/build/riscv64-nemu-interpreter-so \
+  -I 200000 \
+  -C 500000
+```
+
+说明：
+
+- `-I`：最大指令数
+- `-C`：最大周期数；默认不限
+
+## CLI
+
+启动 CLI 的底层命令等价于：
+
+```bash
+./build/emu -i build/workloads/rv64ui-simple.elf --diff /workspace/NEMU/build/riscv64-nemu-interpreter-so -I 200000 --cli
+```
+
+CLI 常用命令：
+
+- `n <N>`：运行 `N` 个周期
+- `nd <N>`：运行 `N` 个周期后导出波形并启动 `surver`
+- `c`：持续运行直到仿真结束
+- `d`：导出波形并启动 `surver`
+- `t`：切换波形记录
+- `status`：显示当前状态
+- `q` / `quit` / `exit`：退出
+
+说明：
+
+- `make cli` / `make run-cli` 使用 trace 版 `emu` 时，CLI 默认启动波形记录
+- 这样会从仿真起点开始录波，包括 reset
+- 未显式指定 `--wave-path` 时，会自动生成一个默认波形文件路径
+- 如果需要 `d/nd/t`，请使用 `make emu-cli ...` 或显式用 `EMU_TRACE=fst` 重编
+
+## 一体式波形调试
+
+推荐命令：
 
 ```bash
 ./scripts/run-difftest-wave.sh simple
 ```
 
-这个命令会按顺序完成：
+该脚本会：
 
-1. 编译 `rv64ui-simple` workload
-   同时生成 `build/disasm/rv64ui-simple.txt`
-2. 用 `EMU_TRACE=fst` 重新编译 `emu`
-3. 运行 difftest
-4. 导出波形到 `wave/rv64ui-simple.fst`
-5. 在前台启动 `surver` 提供波形服务
+1. 编译 workload
+2. 生成反汇编
+3. 用 `EMU_TRACE=fst` 重编 `emu`
+4. 运行 difftest
+5. 导出 `fst` 波形
+6. 在前台启动 `surver`
 
-也可以直接走 Make 封装：
-
-```bash
-make wave-riscv-test TEST=simple
-```
-
-脚本只要求一个位置参数：
-
-- `simple`
-- `jal`
-- `addi`
-- `beq`
-- 也支持完整名，比如 `rv64ui-simple`
-
-## 可用测试
-
-默认脚本面向 `rv64ui`，当前仓库可直接使用这些测试名：
-
-```text
-add addi addiw addw and andi auipc
-beq bge bgeu blt bltu bne
-fence_i jal jalr
-lb lbu ld ld_st lh lhu lui lw lwu
-ma_data
-or ori
-sb sd sh simple sll slli slliw sllw slt slti sltiu sltu
-sra srai sraiw sraw srl srli srliw srlw
-st_ld sub subw sw
-xor xori
-```
-
-也可以自动枚举：
-
-```bash
-cd third_party/riscv-tests/isa/rv64ui
-printf '%s\n' *.S | sed 's/\\.S$//' | sort
-```
-
-## 波形输出
-
-脚本默认输出：
-
-- 波形文件：`wave/<isa-suite>-<test>.fst`
-- 反汇编文件：`build/disasm/<isa-suite>-<test>.txt`
-
-默认会执行等价命令：
-
-```bash
-surver wave/rv64ui-simple.fst --port 4000 --token 00000000
-```
-
-启动后会打印：
-
-- 波形文件路径
-- 反汇编文件路径
-- 访问地址 `http://127.0.0.1:4000`
-- token `00000000`
-- 然后前台停在 `surver` 进程上，`Ctrl-C` 即可关闭
-
-## 常用环境变量
-
-这些都不是必选参数，只是覆盖默认值：
+常用变量：
 
 ```bash
 NO_SERVER=1 ./scripts/run-difftest-wave.sh simple
@@ -140,33 +150,39 @@ SURVER_PORT=4010 ./scripts/run-difftest-wave.sh simple
 SURVER_TOKEN=12345678 ./scripts/run-difftest-wave.sh simple
 WAVE_END=5000 ./scripts/run-difftest-wave.sh simple
 EMU_MAX_INSTR=500000 ./scripts/run-difftest-wave.sh simple
-REF_SO=/workspace/NEMU/build/riscv64-nemu-interpreter-so ./scripts/run-difftest-wave.sh simple
+EMU_MAX_CYCLES=500000 ./scripts/run-difftest-wave.sh simple
+NEMU_REF_SO=/workspace/NEMU/build/riscv64-nemu-interpreter-so ./scripts/run-difftest-wave.sh simple
 ```
 
-含义：
+输出位置：
 
-- `NO_SERVER=1`：只出波形，不启动 `surver`
-- `SURVER_PORT`：波形服务端口
-- `SURVER_TOKEN`：波形服务 token
-- `WAVE_END`：波形导出截止 cycle
-- `EMU_MAX_INSTR`：仿真最大指令数
-- `REF_SO`：difftest 参考模型 `.so` 路径
+- ELF：`build/workloads/<isa>-<test>.elf`
+- 反汇编：`build/disasm/<isa>-<test>.txt`
+- 波形：`wave/<isa>-<test>.fst`
 
-## 当前调试建议
+## 可用测试
 
-目前最稳的回归顺序：
+默认面向 `rv64ui`。当前常用测试包括：
 
-```bash
-./scripts/run-difftest-wave.sh simple
-./scripts/run-difftest-wave.sh jal
-./scripts/run-difftest-wave.sh addi
-./scripts/run-difftest-wave.sh beq
-./scripts/run-difftest-wave.sh jalr
-./scripts/run-difftest-wave.sh auipc
+```text
+simple
+add addi addiw addw
+and andi or ori xor xori
+sll slli slliw sllw
+srl srli srliw srlw
+sra srai sraiw sraw
+slt slti sltiu sltu
+sub subw
+lui auipc jal jalr
+beq bne blt bge bltu bgeu
+lb lbu lh lhu lw lwu ld
+sb sh sw sd
+fence_i
 ```
 
-如果只想要波形，不想起服务：
+枚举方式：
 
 ```bash
-NO_SERVER=1 ./scripts/run-difftest-wave.sh jal
+cd third_party/riscv-tests/isa/rv64ui
+printf '%s\n' *.S | sed 's/\\.S$//' | sort
 ```

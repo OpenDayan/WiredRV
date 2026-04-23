@@ -1,4 +1,4 @@
-package wiredrv.neocore
+package wiredrv
 
 import chisel3._
 import chisel3.util._
@@ -13,6 +13,8 @@ case class CoreParams(
   xlen: Int = 64,
   addrBits: Int = 39,
   resetPc: BigInt = 0x80000000L,
+  innerBusWidth: Int = 32,
+  outerBusWidth: Int = 64,
   icacheSets: Int = 256,
   icacheWays: Int = 2,
   icacheLineBytes: Int = 64,
@@ -24,6 +26,8 @@ case class CoreParams(
   cachedRegions: Seq[AddrRegion] = Seq(AddrRegion(0x80000000L, 0x10000000L)),
   uncachedRegions: Seq[AddrRegion] = Seq(AddrRegion(0x00000000L, 0x80000000L))
 ) {
+  require(isPow2(innerBusWidth / 8), "innerBusWidth must be power-of-two bytes")
+  require(isPow2(outerBusWidth / 8), "outerBusWidth must be power-of-two bytes")
   require(icacheWays == 2, "current frontend skeleton assumes 2-way icache")
   require(dcacheWays == 2, "current backend skeleton assumes 2-way dcache")
   require(icacheLineBytes >= 4 && (icacheLineBytes & (icacheLineBytes - 1)) == 0)
