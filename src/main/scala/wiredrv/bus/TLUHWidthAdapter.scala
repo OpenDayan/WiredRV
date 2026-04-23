@@ -141,19 +141,23 @@ class TLUHWidthAdapter(inWidth: Int, outWidth: Int)(implicit p: CoreParams) exte
       }
     }
 
-    val pendingIsRead = RegInit(false.B)
-    val pendingReadBaseLane = RegInit(0.U(laneBits.W))
+    val readDBeatsLeft = RegInit(0.U(countBits.W))
+    val readBaseLane = RegInit(0.U(laneBits.W))
+    val readUseBaseLane = RegInit(false.B)
 
     when(io.out.a.fire) {
-      pendingIsRead := !outSendingWrite
-      if (ratio == 1) {
-        pendingReadBaseLane := 0.U
-      } else {
-        pendingReadBaseLane := Mux(
-          io.out.a.bits.size <= outBeatLg.U,
-          io.out.a.bits.address(outBeatLg - 1, inBeatLg),
-          0.U
-        )
+      when(!outSendingWrite) {
+        readDBeatsLeft := beatCount(io.out.a.bits.size, outBeatLg)
+        readUseBaseLane := true.B
+        if (ratio == 1) {
+          readBaseLane := 0.U
+        } else {
+          readBaseLane := Mux(
+            io.out.a.bits.size <= outBeatLg.U,
+            io.out.a.bits.address(outBeatLg - 1, inBeatLg),
+            0.U
+          )
+        }
       }
     }
 
@@ -167,23 +171,25 @@ class TLUHWidthAdapter(inWidth: Int, outWidth: Int)(implicit p: CoreParams) exte
     val readRespLane = (readRespBaseLane + readRespSliceIdx)(laneBits - 1, 0)
     val readRespLast = readRespSliceIdx === (readRespSliceCount - 1.U)
 
-    io.out.d.ready := Mux(pendingIsRead, !readRespActive, io.in.d.ready)
+    io.out.d.ready := Mux(readDBeatsLeft =/= 0.U, !readRespActive, io.in.d.ready)
 
-    when(!readRespActive && pendingIsRead && io.out.d.fire) {
+    when(!readRespActive && (readDBeatsLeft =/= 0.U) && io.out.d.fire) {
       val nextSliceCount = Wire(UInt((laneBits + 1).W))
       nextSliceCount := Mux(
-        io.out.d.bits.size <= inBeatLg.U,
-        1.U,
-        (pow2Bytes(io.out.d.bits.size) >> inBeatLg)
+        readDBeatsLeft > 1.U,
+        ratio.U,
+        Mux(io.out.d.bits.size <= inBeatLg.U, 1.U, (pow2Bytes(io.out.d.bits.size) >> inBeatLg))
       )
       readRespReg := io.out.d.bits
-      readRespBaseLane := pendingReadBaseLane
+      readRespBaseLane := Mux(readUseBaseLane, readBaseLane, 0.U)
       readRespSliceIdx := 0.U
       readRespSliceCount := nextSliceCount
       readRespActive := true.B
+      readDBeatsLeft := readDBeatsLeft - 1.U
+      readUseBaseLane := false.B
     }
 
-    io.in.d.valid := Mux(readRespActive, true.B, !pendingIsRead && io.out.d.valid)
+    io.in.d.valid := Mux(readRespActive, true.B, Mux(readDBeatsLeft =/= 0.U, false.B, io.out.d.valid))
     io.in.d.bits := 0.U.asTypeOf(io.in.d.bits)
     io.in.d.bits.opcode := Mux(readRespActive, readRespReg.opcode, io.out.d.bits.opcode)
     io.in.d.bits.param := Mux(readRespActive, readRespReg.param, io.out.d.bits.param)
