@@ -25,10 +25,22 @@ class WiredCore(implicit p: CoreParams) extends Module {
   val imemWidthUp = Module(new AxiNarrowToWide(innerAxi, outerAxi, buffer = 4))
   val dmemWidthUp = Module(new AxiNarrowToWide(innerAxi, outerAxi, buffer = 4))
   val xbar = Module(new LmssAxiXbar(Seq(outerAxi, outerAxi)))
-
   frontend.io.redirects.foreach { redir =>
     redir.valid := false.B
     redir.bits := 0.U
+  }
+
+  val cnt = RegInit(7.U)
+  cnt := cnt - 1.U
+
+  when(cnt === 0.U) {
+    frontend.io.redirects(0).valid := frontend.io.inst.bits.pc >= "h80000000".U
+    val nxt = frontend.io.inst.bits.pc + (13 * 4).U
+    when(nxt > "h80000100".U) {
+      frontend.io.redirects(0).bits := "h80000000".U
+    }.otherwise {
+      frontend.io.redirects(0).bits := nxt
+    }
   }
   frontend.io.ifencei := false.B
 

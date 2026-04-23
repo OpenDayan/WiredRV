@@ -74,6 +74,11 @@ class AxiDiffMem(axiP: AxiParams)(implicit p: CoreParams) extends Module {
 
 class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTestInterfaces {
 
+  val io = IO(new Bundle {
+    val inst = Valid(UInt(32.W))
+    val pc = UInt(p.addrBits.W)
+  })
+
   val d0 = DifftestModule(new DiffArchEvent, delay = 1, dontCare = true)
   val d1 = DifftestModule(new DiffPhyIntRegState(32), delay = 1, dontCare = true)
   val d2 = DifftestModule(new DiffCSRState, delay = 1, dontCare = true)
@@ -87,8 +92,13 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   ))))
   val r = RegInit(0.B)
   r := !r
-  core.io.inst.ready := r
+  // core.io.inst.ready := r
+  core.io.inst.ready := 1.B
   mem.io.axi <> core.io.mem
+
+  io.pc := core.io.inst.bits.pc
+  io.inst.valid := core.io.inst.fire
+  io.inst.bits := core.io.inst.bits.inst
 }
 
 object WiredCoreHarnessTopMain extends App {

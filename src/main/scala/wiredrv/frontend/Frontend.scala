@@ -5,6 +5,7 @@ import chisel3.util._
 import wiredrv.CoreParams
 import wiredrv.bus._
 import wiredrv.bus.BusOp.ReadOnly
+import xs.utils.sram.SRAMTemplate
 
 class FetchPacket(implicit p: CoreParams) extends Bundle {
   val pc = UInt(p.addrBits.W)
@@ -50,8 +51,8 @@ class Frontend(implicit p: CoreParams) extends Module {
   require(p.icacheWays == 2)
   private val beatsPerLine = p.icacheLineBytes / 4
   val icValid = RegInit(0.U.asTypeOf(Vec(p.icacheWays, Vec(p.icacheSets, Bool()))))
-  val icTags = Seq.fill(p.icacheWays)(SyncReadMem(p.icacheSets, new ICTag))
-  val icDatas = Seq.fill(p.icacheWays)(SyncReadMem(p.icacheSets * beatsPerLine, UInt(p.xlen.W)))
+  val icTags = Seq.fill(p.icacheWays)(Module(new SRAMTemplate(new ICTag, p.icacheSets, singlePort = true)))
+  val icDatas = Seq.fill(p.icacheWays)(Module(new SRAMTemplate(UInt(p.xlen.W), p.icacheSets * beatsPerLine, singlePort = true)))
   val f1Hit = WireDefault(false.B)
   val f1Inst = WireDefault(0.U(32.W))
 
@@ -66,22 +67,46 @@ class Frontend(implicit p: CoreParams) extends Module {
 
   val rSelWay = RegInit(0.U(1.W))
   val rAValid = RegInit(false.B)
+  val rRValid = RegInit(false.B) // 脉冲重定向信号
   val rDCnt = RegInit(0.U(log2Ceil(beatsPerLine).W))
 
   when(io.ifencei) {
     icValid := 0.U.asTypeOf(icValid)
   }
 
+  val readTagSet = p.icacheGetSet(pc)
+  val writeTagSet = p.icacheGetSet(f2Inst.pc)
+  val readDataIdx = p.icacheGetSet(pc) ## p.icacheGetWord(pc)
+  val writeDataIdx = p.icacheGetSet(f2Inst.pc) ## rDCnt
+
+  icTags.zipWithIndex.foreach { case (icTag, idx) =>
+    icTag.io.r.req.valid := !f2Refill && !frontStall
+    icTag.io.r.req.bits.apply(readTagSet)
+    icTag.io.w.req.valid := f2Refill && (rSelWay === idx.U)
+    icTag.io.w.req.bits.apply(WireInit({
+      val w = Wire(new ICTag)
+      w.tag := p.icacheGetTag(f2Inst.pc)
+      w
+    }), writeTagSet, 1.U)
+  }
+
+  icDatas.zipWithIndex.foreach { case (icData, idx) =>
+    icData.io.r.req.valid := !f2Refill && !frontStall
+    icData.io.r.req.bits.apply(readDataIdx)
+    icData.io.w.req.valid := io.bus.d.fire && (rSelWay === idx.U)
+    icData.io.w.req.bits.apply(io.bus.d.bits.data, writeDataIdx, 1.U)
+  }
+
   when(!f2Refill) {
     val hits = icValid.zip(icTags).map { case (v, t) =>
       val set = p.icacheGetSet(pc)
-      RegNext(!(io.ifencei) && v(set), false.B) && t.read(set).tag === p.icacheGetTag(f1pc)
+      RegEnable(!(io.ifencei) && v(set), !frontStall) && t.io.r.resp.data(0).tag === p.icacheGetTag(f1pc)
     }
-    val insts = VecInit(icDatas.map(_.read(p.icacheGetSet(pc) ## p.icacheGetWord(pc))))
+    val insts = VecInit(icDatas.map(_.io.r.resp.data(0)))
     f1Hit := VecInit(hits).asUInt.orR
     f1Inst := Mux(hits(0), insts(0), insts(1))
     f1Valid := true.B
-  }.elsewhen(anyRedir) {
+  }.otherwise {
     f1Valid := false.B
   }
 
@@ -96,6 +121,7 @@ class Frontend(implicit p: CoreParams) extends Module {
       f2Refill := true.B
       rSelWay := rWay
       rAValid := true.B
+      rRValid := true.B
       rDCnt := 0.U
     }
     f2Inst.pc := f1pc
@@ -117,26 +143,14 @@ class Frontend(implicit p: CoreParams) extends Module {
 
   when(f2Refill) {
     rAValid := rAValid && !io.bus.a.ready
+    rRValid := false.B
     icValid(rSelWay)(p.icacheGetSet(f2Inst.pc)) := true.B
-    icTags.zipWithIndex.foreach { case (icTag, idx) =>
-      when(rSelWay === idx.U) {
-        icTag.write(p.icacheGetSet(f2Inst.pc), WireInit({
-          val w = Wire(new ICTag)
-          w.tag := p.icacheGetTag(f2Inst.pc)
-          w
-        }))
-      }
-    }
     when(io.bus.d.fire) {
       rDCnt := rDCnt + 1.U
-      icDatas.zipWithIndex.foreach { case (icData, idx) =>
-        when(rSelWay === idx.U) {
-          icData.write(p.icacheGetSet(f2Inst.pc) ## rDCnt, io.bus.d.bits.data)
-        }
-      }
     }
   }
-  frontMissReplay.valid := f2Refill
+
+  frontMissReplay.valid := rRValid
   frontMissReplay.bits := f2Inst.pc
 
   io.bus.a.valid := rAValid
