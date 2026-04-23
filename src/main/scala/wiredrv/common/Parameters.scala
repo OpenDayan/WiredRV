@@ -20,7 +20,7 @@ case class CoreParams(
   dcacheLineBytes: Int = 64,
   storeQueueDepth: Int = 4,
   longLatencySlots: Int = 3,
-  cachedRegions: Seq[AddrRegion] = Seq(AddrRegion(0x80000000L, 0x10000000L)),
+  cachedRegions: Seq[AddrRegion] = Seq(AddrRegion(0x80000000L, 0x100000000L)),
   uncachedRegions: Seq[AddrRegion] = Seq(AddrRegion(0x00000000L, 0x80000000L))
 ) {
   require(icacheWays == 2, "current frontend skeleton assumes 2-way icache")
