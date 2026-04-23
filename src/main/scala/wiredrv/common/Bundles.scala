@@ -62,14 +62,20 @@ class ICacheResp(implicit p: CoreParams) extends Bundle {
   val pc = UInt(p.addrBits.W)
   val hit = Bool()
   val waymask = UInt(p.icacheWays.W)
-  val line = UInt((p.icacheLineBytes * 8).W)
+  val data = UInt(p.xlen.W)
 }
 
-class ICacheRefillWrite(implicit p: CoreParams) extends Bundle {
+class ICacheTagWrite(implicit p: CoreParams) extends Bundle {
   val setIdx = UInt(p.icacheSetBits.W)
   val tag = UInt(p.icacheTagBits.W)
   val way = UInt(log2Ceil(p.icacheWays).W)
-  val line = UInt((p.icacheLineBytes * 8).W)
+}
+
+class ICacheDataWrite(implicit p: CoreParams) extends Bundle {
+  val setIdx = UInt(p.icacheSetBits.W)
+  val beatIdx = UInt((p.icacheLineBits - log2Ceil(p.xlen / 8)).W)
+  val way = UInt(log2Ceil(p.icacheWays).W)
+  val data = UInt(p.xlen.W)
 }
 
 class IRefillReq(implicit p: CoreParams) extends Bundle {
@@ -200,6 +206,9 @@ class StageE(implicit p: CoreParams) extends Bundle {
   val src1 = UInt(p.xlen.W)
   val src2 = UInt(p.xlen.W)
   val rdData = UInt(p.xlen.W)
+  val rs1ForwardFromW = Bool()
+  val rs2ForwardFromW = Bool()
+  val rdForwardFromW = Bool()
   val dcache = new DCachePipeResp
   val exec = new ExecuteOut
 }

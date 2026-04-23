@@ -27,6 +27,7 @@ object Test extends App {
   ChiselStage.emitSystemVerilog(
     DifftestModule.top(new Test()),
     firtoolOpts = Array(
+      "--mlir-disable-threading",
       "-disable-all-randomization",
       "-strip-debug-info",
       "-preserve-aggregate=vec",

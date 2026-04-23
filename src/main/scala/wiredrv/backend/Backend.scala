@@ -47,59 +47,28 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val rs1Addr = decode.io.out.rs1
   val rs2Addr = decode.io.out.rs2
+  val rdAddr = decode.io.out.rd
+  val dUseRs1 = decode.io.out.info.src1Type === SrcType.reg
+  val dUseRs2 = decode.io.out.info.src2Type === SrcType.reg
+  val dUseRd = decode.io.out.info.readRd
   val dRs1Raw = regfile.io.rdata(0)
   val dRs2Raw = regfile.io.rdata(1)
   val dRdRaw = regfile.io.rdata(2)
-  val dRdAddr = decode.io.out.rd
-  val dAddrCandidate = dRs1Raw + decode.io.out.imm
-  val dMemOp = decode.io.out.info.isLoad || decode.io.out.info.isStore || decode.io.out.info.isCacheMaintain
-  val dPipeCacheOp = (decode.io.out.info.isLoad || decode.io.out.info.isStore) &&
-    !MemoryMap.hit(dAddrCandidate(p.addrBits - 1, 0), p.uncachedRegions)
-  val dIsUncached = dMemOp && MemoryMap.hit(dAddrCandidate(p.addrBits - 1, 0), p.uncachedRegions)
-
-  dStage := 0.U.asTypeOf(new StageD)
-  dStage.fetch := io.in.bits
-  dStage.decoded := decode.io.out
-  dStage.decoded.pc := io.in.bits.pc
-  dStage.decoded.isUncached := dIsUncached
-  dStage.src1 := dRs1Raw
-  dStage.src2 := dRs2Raw
-  dStage.rdData := dRdRaw
-
-  regfile.io.raddr := VecInit(Seq(rs1Addr, rs2Addr, Mux(decode.io.out.info.readRd, dRdAddr, 0.U(5.W))))
-
-  scoreboard.io.probeRs1 := 0.U
-  scoreboard.io.probeRs2 := 0.U
-
-  val dJumpRedirect = Wire(Valid(new RedirectReq))
-  dJumpRedirect.valid := dValid && decode.io.out.info.isJump && decode.io.out.info.fuOpType === BruOp.jal
-  dJumpRedirect.bits.target := (io.in.bits.pc + decode.io.out.imm)(p.addrBits - 1, 0)
-  dJumpRedirect.bits.cause := RedirectCause.jumpEarlyDecode
-
-  val dcacheLookupReq = WireDefault(0.U.asTypeOf(new LSUReq))
-  dcacheLookupReq.addr := dAddrCandidate(p.addrBits - 1, 0)
-  dcacheLookupReq.funct3 := decode.io.out.info.fuOpType(2, 0)
-  dcacheLookupReq.isLoad := decode.io.out.info.isLoad
-  dcacheLookupReq.isStore := decode.io.out.info.isStore
-  dcacheLookupReq.isCacheMaintain := false.B
-  dcacheLookupReq.cacheMaintainOp := CacheMaintainOp.none
-  dcacheLookupReq.miss := false.B
-  dcacheLookupReq.waymask := 0.U
-  dcacheLookupReq.data := dRs2Raw
-  dcacheLookupReq.uncached := false.B
-  dcacheTop.io.dReq.valid := dValid && dPipeCacheOp
-  dcacheTop.io.dReq.bits := dcacheLookupReq
-
-  execute.io.in := 0.U.asTypeOf(new ExecuteIn)
-  val eRs1HazW = wValid && eStage.decoded.rs1.orR && eStage.decoded.rs1 === wStage.decoded.rd
-  val eRs2HazW = wValid && eStage.decoded.rs2.orR && eStage.decoded.rs2 === wStage.decoded.rd
-  val eRdHazW = wValid && eStage.decoded.info.readRd && eStage.decoded.rd.orR && eStage.decoded.rd === wStage.decoded.rd
-
   val cachedLoadHitData = Mux(
     wStage.decoded.isUncached || wStage.dcache.miss,
     0.U,
     wStage.dcache.data
   )
+  val sbIssueFixed = Wire(Valid(new FixedSlot))
+  val sbAdvance = WireDefault(false.B)
+  val sbWbWriteback = Wire(Valid(UInt(5.W)))
+  val sbWbClear = Wire(Valid(UInt(5.W)))
+  sbIssueFixed.valid := false.B
+  sbIssueFixed.bits := 0.U.asTypeOf(new FixedSlot)
+  sbWbWriteback.valid := false.B
+  sbWbWriteback.bits := 0.U
+  sbWbClear.valid := false.B
+  sbWbClear.bits := 0.U
 
   val wCachedReq = wValid && !wStage.decoded.isUncached &&
     (wStage.decoded.info.isStore || wStage.dcache.miss || wStage.decoded.info.isCacheMaintain) &&
@@ -119,9 +88,73 @@ class Backend(implicit p: CoreParams) extends Module {
   val wbData = Mux(wStage.decoded.info.isLoad, wbLoadData, wStage.exec.result)
   val wBypassEn = wValid && !memHold && wStage.decoded.info.rfWen && wStage.decoded.rd.orR
 
-  val eSrc1Raw = Mux(eRs1HazW && wBypassEn, wbData, eStage.src1)
-  val eSrc2Raw = Mux(eRs2HazW && wBypassEn, wbData, eStage.src2)
-  val eRdRaw = Mux(eRdHazW && wBypassEn, wbData, eStage.rdData)
+  dStage := 0.U.asTypeOf(new StageD)
+  dStage.fetch := io.in.bits
+  dStage.decoded := decode.io.out
+  dStage.decoded.pc := io.in.bits.pc
+
+  regfile.io.raddr := VecInit(Seq(rs1Addr, rs2Addr, Mux(dUseRd, rdAddr, 0.U(5.W))))
+
+  scoreboard.io.probeRs1 := Mux(dUseRs1, rs1Addr, 0.U)
+  scoreboard.io.probeRs2 := Mux(dUseRs2, rs2Addr, 0.U)
+  scoreboard.io.probeRd := rdAddr
+  scoreboard.io.issueFixed := sbIssueFixed
+  scoreboard.io.advance := sbAdvance
+  scoreboard.io.wbWriteback := sbWbWriteback
+  scoreboard.io.wbClear := sbWbClear
+  scoreboard.io.longAlloc.valid := false.B
+  scoreboard.io.longAlloc.bits := 0.U.asTypeOf(new LongSlot)
+  scoreboard.io.longRelease.valid := false.B
+  scoreboard.io.longRelease.bits := 0.U
+
+  val eFixedSlot = scoreboard.io.fixed(0)
+  val wFixedSlot = scoreboard.io.fixed(1)
+  val dMemOp = decode.io.out.info.isLoad || decode.io.out.info.isStore || decode.io.out.info.isCacheMaintain
+  val dRs1HazE = eFixedSlot.valid && dUseRs1 && rs1Addr.orR && rs1Addr === eFixedSlot.rd
+  val dRs2HazE = eFixedSlot.valid && dUseRs2 && rs2Addr.orR && rs2Addr === eFixedSlot.rd
+  val dRdHazE = eFixedSlot.valid && dUseRd && rdAddr.orR && rdAddr === eFixedSlot.rd
+  val dAddrHazE = dMemOp && dRs1HazE
+  val dIssueStall = scoreboard.io.stall || dAddrHazE
+
+  val dRs1HazW = wFixedSlot.valid && !dRs1HazE && dUseRs1 && rs1Addr.orR && rs1Addr === wFixedSlot.rd
+  val dRs2HazW = wFixedSlot.valid && !dRs2HazE && dUseRs2 && rs2Addr.orR && rs2Addr === wFixedSlot.rd
+  val dRdHazW = wFixedSlot.valid && !dRdHazE && dUseRd && rdAddr.orR && rdAddr === wFixedSlot.rd
+  val dRs1Bypass = Mux(dRs1HazW, wbData, dRs1Raw)
+  val dRs2Bypass = Mux(dRs2HazW, wbData, dRs2Raw)
+  val dRdBypass = Mux(dRdHazW, wbData, dRdRaw)
+  val dAddrCandidate = dRs1Bypass + decode.io.out.imm
+  val dPipeCacheOp = (decode.io.out.info.isLoad || decode.io.out.info.isStore) &&
+    !MemoryMap.hit(dAddrCandidate(p.addrBits - 1, 0), p.uncachedRegions)
+  val dIsUncached = dMemOp && MemoryMap.hit(dAddrCandidate(p.addrBits - 1, 0), p.uncachedRegions)
+
+  dStage.decoded.isUncached := dIsUncached
+  dStage.src1 := dRs1Bypass
+  dStage.src2 := dRs2Bypass
+  dStage.rdData := dRdBypass
+
+  val dJumpRedirect = Wire(Valid(new RedirectReq))
+  dJumpRedirect.valid := dValid && decode.io.out.info.isJump && decode.io.out.info.fuOpType === BruOp.jal
+  dJumpRedirect.bits.target := (io.in.bits.pc + decode.io.out.imm)(p.addrBits - 1, 0)
+  dJumpRedirect.bits.cause := RedirectCause.jumpEarlyDecode
+
+  val dcacheLookupReq = WireDefault(0.U.asTypeOf(new LSUReq))
+  dcacheLookupReq.addr := dAddrCandidate(p.addrBits - 1, 0)
+  dcacheLookupReq.funct3 := decode.io.out.info.fuOpType(2, 0)
+  dcacheLookupReq.isLoad := decode.io.out.info.isLoad
+  dcacheLookupReq.isStore := decode.io.out.info.isStore
+  dcacheLookupReq.isCacheMaintain := false.B
+  dcacheLookupReq.cacheMaintainOp := CacheMaintainOp.none
+  dcacheLookupReq.miss := false.B
+  dcacheLookupReq.waymask := 0.U
+  dcacheLookupReq.data := dRs2Bypass
+  dcacheLookupReq.uncached := false.B
+  dcacheTop.io.dReq.valid := dValid && dPipeCacheOp && !dIssueStall
+  dcacheTop.io.dReq.bits := dcacheLookupReq
+
+  execute.io.in := 0.U.asTypeOf(new ExecuteIn)
+  val eSrc1Raw = Mux(eStage.rs1ForwardFromW && wBypassEn, wbData, eStage.src1)
+  val eSrc2Raw = Mux(eStage.rs2ForwardFromW && wBypassEn, wbData, eStage.src2)
+  val eRdRaw = Mux(eStage.rdForwardFromW && wBypassEn, wbData, eStage.rdData)
 
   execute.io.in.pc := eStage.decoded.pc
   execute.io.in.inst := eStage.decoded.inst
@@ -159,8 +192,14 @@ class Backend(implicit p: CoreParams) extends Module {
   uncached.io.req.valid := wUncachedReq
   uncached.io.req.bits := wUncachedReqBits
 
-  val dcachePredictHold = dValid && dPipeCacheOp && !dcacheTop.io.dReady
-  val globalHold = memHold || dcachePredictHold
+  val dcachePredictHold = dValid && dPipeCacheOp && !dIssueStall && !dcacheTop.io.dReady
+  val globalHold = memHold || dcachePredictHold || dIssueStall
+  val fixedIssueEn = dValid && !globalHold && decode.io.out.info.rfWen && rdAddr.orR &&
+    !decode.io.out.info.isMul && !decode.io.out.info.isDiv && !decode.io.out.info.isAtomic
+  sbIssueFixed.valid := fixedIssueEn
+  sbIssueFixed.bits.valid := true.B
+  sbIssueFixed.bits.rd := rdAddr
+  sbIssueFixed.bits.isLoad := decode.io.out.info.isLoad
 
   val eUncachedFlush = eValid && eStage.decoded.isUncached &&
     (eStage.decoded.info.isLoad || eStage.decoded.info.isStore || eStage.decoded.info.isCacheMaintain)
@@ -198,6 +237,9 @@ class Backend(implicit p: CoreParams) extends Module {
       SrcType.pc -> dStage.fetch.pc
     ))
     eStage.rdData := dStage.rdData
+    eStage.rs1ForwardFromW := dRs1HazE && !dAddrHazE
+    eStage.rs2ForwardFromW := dRs2HazE
+    eStage.rdForwardFromW := dRdHazE
     eStage.dcache := 0.U.asTypeOf(new DCachePipeResp)
     eStage.exec := execute.io.out
   }
@@ -221,6 +263,7 @@ class Backend(implicit p: CoreParams) extends Module {
       wStage.exec := execute.io.out
     }
   }
+  sbAdvance := !globalHold && !wReplayRedirect.valid
 
   val wMemException = wStage.dcache.exception ||
     (wCachedReq && dcacheTop.io.wResp.bits.exception) ||
@@ -229,6 +272,8 @@ class Backend(implicit p: CoreParams) extends Module {
     Mux(wStage.decoded.isUncached, uncached.io.resp.bits.exceptionCode, dcacheTop.io.wResp.bits.exceptionCode))
 
   val wRetire = wValid && !memHold && !wReplay && !wMemException
+  sbWbWriteback.valid := wRetire && wStage.decoded.info.rfWen && wStage.decoded.rd.orR
+  sbWbWriteback.bits := wStage.decoded.rd
 
   regfile.io.wen := VecInit(Seq(wRetire && wStage.decoded.info.rfWen && !wStage.decoded.info.illegal, false.B))
   regfile.io.waddr := VecInit(Seq(wStage.decoded.rd, 0.U(5.W)))
@@ -250,6 +295,8 @@ class Backend(implicit p: CoreParams) extends Module {
     wStage.exec.exception ||
     wMemException
   ) && !memHold
+  sbWbClear.valid := (trapInW || wReplayRedirect.valid) && wStage.decoded.info.rfWen && wStage.decoded.rd.orR
+  sbWbClear.bits := wStage.decoded.rd
 
   csr.io.writeValid := wRetire && wStage.decoded.info.isCsr && wStage.decoded.info.fuOpType =/= CsrOp.ecall
   csr.io.writeAddr := wStage.decoded.csrAddr

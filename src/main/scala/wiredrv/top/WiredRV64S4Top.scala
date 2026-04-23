@@ -65,6 +65,7 @@ object WiredRV64S4TopMain extends App {
   ChiselStage.emitSystemVerilog(
     DifftestModule.top(new WiredRV64S4Top),
     firtoolOpts = Array(
+      "--mlir-disable-threading",
       "-disable-all-randomization",
       "-strip-debug-info",
       "-preserve-aggregate=vec",
@@ -79,6 +80,7 @@ object WiredRV64S4BareTopMain extends App {
   ChiselStage.emitSystemVerilog(
     new WiredRV64S4Top,
     firtoolOpts = Array(
+      "--mlir-disable-threading",
       "-disable-all-randomization",
       "-strip-debug-info",
       "-preserve-aggregate=vec",

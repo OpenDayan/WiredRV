@@ -1,5 +1,5 @@
 
-.PHONY: sim-verilog emu clean nemu-ref riscv-test-workload emu-riscv-test difftest-riscv-test
+.PHONY: sim-verilog emu clean nemu-ref riscv-test-workload emu-riscv-test difftest-riscv-test wave-riscv-test
 
 NOOP_HOME ?= $(abspath .)
 export NOOP_HOME
@@ -8,12 +8,14 @@ export NEMU_HOME
 NEMU_STATIC_REF ?= $(NEMU_HOME)/build/libriscv64-nemu-interpreter.a
 RISCV_PREFIX ?= /public/riscv-tools/rv64ima/bin/riscv64-unknown-elf
 RISCV_GCC ?= $(RISCV_PREFIX)-gcc
+RISCV_OBJDUMP ?= $(RISCV_PREFIX)-objdump
 RISCV_TESTS_HOME ?= $(NOOP_HOME)/third_party/riscv-tests
 RISCV_TEST_ENV ?= $(NOOP_HOME)/tests/riscv-tests/wiredrv
 ISA_SUITE ?= rv64ui
 TEST ?= simple
 EMU_MAX_INSTR ?= 200000
 WORKLOAD_ELF ?= $(NOOP_HOME)/build/workloads/$(ISA_SUITE)-$(TEST).elf
+WORKLOAD_DISASM ?= $(NOOP_HOME)/build/disasm/$(ISA_SUITE)-$(TEST).txt
 
 sim-verilog:
 	mill 'wiredrv[6.6.0].runMain' wiredrv.top.WiredRV64S4TopMain
@@ -43,7 +45,11 @@ $(WORKLOAD_ELF): $(RISCV_TEST_ENV)/riscv_test.h $(RISCV_TEST_ENV)/link.ld \
 		-T $(RISCV_TEST_ENV)/link.ld \
 		$(RISCV_TESTS_HOME)/isa/$(ISA_SUITE)/$(TEST).S -o $@
 
-riscv-test-workload: $(WORKLOAD_ELF)
+$(WORKLOAD_DISASM): $(WORKLOAD_ELF)
+	@mkdir -p $(@D)
+	$(RISCV_OBJDUMP) -d -M no-aliases,numeric $(WORKLOAD_ELF) > $@
+
+riscv-test-workload: $(WORKLOAD_ELF) $(WORKLOAD_DISASM)
 
 emu-riscv-test: emu riscv-test-workload
 	./build/emu -i $(WORKLOAD_ELF) --no-diff -I $(EMU_MAX_INSTR)
@@ -51,6 +57,9 @@ emu-riscv-test: emu riscv-test-workload
 difftest-riscv-test: riscv-test-workload nemu-ref
 	@$(MAKE) emu WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF="$(NEMU_STATIC_REF)"
 	./build/emu -i $(WORKLOAD_ELF) -I $(EMU_MAX_INSTR)
+
+wave-riscv-test:
+	./scripts/run-difftest-wave.sh $(TEST)
 
 clean:
 	rm -rf build

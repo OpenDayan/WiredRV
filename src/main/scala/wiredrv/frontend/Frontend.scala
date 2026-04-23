@@ -20,8 +20,7 @@ class Frontend(implicit p: CoreParams) extends Module {
   val instQueue = Module(new Queue(new FetchPacket, 1, flow = true, pipe = false))
 
   val fetchPc = RegInit(p.resetPc.U(p.addrBits.W))
-  val reqOutstanding = RegInit(false.B)
-  val dropResp = RegInit(false.B)
+  val f1Valid = RegInit(false.B)
   val rrWay = RegInit(0.U(log2Ceil(p.icacheWays).W))
 
   nextPc.io.currentPc := fetchPc
@@ -39,25 +38,20 @@ class Frontend(implicit p: CoreParams) extends Module {
 
   icache.io.req.valid := canIssueReq
   icache.io.req.bits := fetchPc
-  icache.io.refill := refill.io.refill
+  icache.io.tagWrite := refill.io.tagWrite
+  icache.io.dataWrite := refill.io.dataWrite
   icache.io.invalidate := io.invalidate
 
-  when(icache.io.req.valid) {
-    reqOutstanding := true.B
-  }
-  when(icache.io.resp.valid) {
-    reqOutstanding := false.B
-  }
-  when(redirectFire && (reqOutstanding || icache.io.req.valid)) {
-    dropResp := true.B
-  }.elsewhen(icache.io.resp.valid) {
-    dropResp := false.B
+  when(redirectFire) {
+    f1Valid := false.B
+  }.otherwise {
+    f1Valid := icache.io.req.valid
   }
 
-  val instSel = icache.io.resp.bits.pc(3, 2)
-  val instVec = icache.io.resp.bits.line.asTypeOf(Vec(p.icacheLineBytes / 4, UInt(32.W)))
+  val instSel = icache.io.resp.bits.pc(2)
   val predictedTarget = icache.io.resp.bits.pc + 4.U
-  val respUsable = icache.io.resp.valid && !dropResp
+  val instWord = Mux(instSel, icache.io.resp.bits.data(63, 32), icache.io.resp.bits.data(31, 0))
+  val respUsable = icache.io.resp.valid && f1Valid
 
   when(redirectFire || canIssueReq) {
     fetchPc := nextPc.io.nextPc
@@ -77,7 +71,7 @@ class Frontend(implicit p: CoreParams) extends Module {
 
   val enqPacket = Wire(new FetchPacket)
   enqPacket.pc := icache.io.resp.bits.pc
-  enqPacket.inst := instVec(instSel)
+  enqPacket.inst := instWord
   enqPacket.jump := false.B
   enqPacket.target := predictedTarget
 
