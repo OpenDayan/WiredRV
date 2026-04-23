@@ -1,0 +1,165 @@
+package cluster.devices.atomicCache
+
+import chisel3._
+import chisel3.util._
+
+class AtomicCacheRefillReq(params: AtomicCacheParams) extends Bundle {
+    // 旧请求的 TagInfo（用于写回时携带）
+    val oldTag   = new TagInfo(params)
+    // 旧请求的 Dirty 位（独立存储）
+    val oldDirty = Bool()
+    // 旧请求的 Index 位
+    val oldTagIndex = UInt(params.log2NumLines.W)
+    // 旧请求的 Way 位
+    val oldTagWay = UInt(params.log2Ways.W)
+
+    // 新请求的地址
+    val addr = UInt(params.addrWidth.W)
+    // 新请求的操作
+    val op = UInt(2.W) // 0: 重填； 1: FLUSH; 2: WRITEBACK
+}
+
+class AtomicCacheRefillBuffer(params: AtomicCacheParams) extends Module {
+    val io = IO(new Bundle {
+        val req = Flipped(Decoupled(new AtomicCacheRefillReq(params)))
+        val refillReq = Decoupled(UInt(params.addrWidth.W))
+        val refillResp = Flipped(Decoupled(UInt(64.W)))
+        val writebackAReq = Decoupled(UInt(params.addrWidth.W))
+        val writebackDReq = Decoupled(UInt(64.W))
+        val writebackResp = Flipped(Decoupled(UInt(3.W)))
+
+        // 读写 data 的接口
+        val dValid = Output(Bool())
+        val dWrite = Output(Bool())
+        // 注意：Byte 寻址
+        val dAddr = Output(UInt((params.log2NumLines + params.log2LineSize).W))
+        val dWay = Output(UInt(params.log2Ways.W))
+        val dWriteData = Output(UInt(64.W))
+        val dReadData = Input(UInt(64.W))   // 一拍后返回
+
+        // 写回 tag 的接口
+        val tagValid = Output(Bool())
+        val tagIndex = Output(UInt(params.log2NumLines.W))
+        val tagFlush = Output(Bool()) // 所有路都需要写入
+        val tagWay = Output(UInt(params.log2Ways.W))
+        val tagInfo = Output(new TagInfo(params))
+    })
+
+    // 永远就绪的握手接口
+    io.refillResp.ready := 1.B
+    io.writebackResp.ready := 1.B
+
+    // 仅支持同时处理一项重填请求，对于 Atomic Cache 原子性的要求来说，已经足够了。
+
+    // 当前正在处理的请求的信息
+    val cReq = RegEnable(new AtomicCacheRefillReq(params), io.req.fire)
+
+    // 采用一个经典而简单的状态机实现
+
+    // 内部核心状态机
+    val sIdle :: sWriteBack :: sRefill :: Nil = Enum(3)
+
+    // 当前状态
+    val s = RegInit(sIdle)
+
+    // 地址已发射
+    val aIssued = Reg(Bool())
+
+    // 地址状态机
+    val sramAddr = Reg(UInt((params.log2LineSize - 3).W))
+    val nxtSramAddr = sramAddr + 1.U
+    val lstSramAddr = sramAddr === ((params.lineSize / 8) - 1).U
+
+    // 写回数据 cFIFO
+    val wbCredit = RegInit(2.U) // 写回 FIFO 剩余空闲项
+    val wbFifo = Module(new Queue(UInt(64.W), 2, false, false)).io
+    val wbCreditDecrease = io.dValid && s === sWriteBack
+    val wbCreditIncrease = wbFifo.deq.fire
+    wbCredit := Mux(wbCreditDecrease ^ wbCreditIncrease, 
+                    Mux(wbCreditDecrease, wbCredit - 1.U, wbCredit + 1.U), 
+                    wbCredit)
+    wbFifo.deq <> io.writebackDReq
+    
+    // refillReq 生成逻辑
+    io.refillReq.valid := s === sRefill && !aIssued
+    io.refillReq.bits := cReq.addr(params.addrWidth - 1, params.log2LineSize) ## 0.U(params.log2LineSize.W)
+
+    // writebackAReq 生成逻辑
+    io.writebackAReq.valid := s === sWriteBack && !aIssued
+    io.writebackAReq.bits := cReq.oldTag.tag ## cReq.oldTagIndex ## 0.U(params.log2LineSize.W)
+
+    // 更新 aIssued
+    when(io.refillReq.fire || io.writebackAReq.fire) {
+        aIssued := 1.B
+    }
+    
+    // data 读写逻辑生成
+    io.dWriteData := io.refillResp.bits
+    io.dAddr  := cReq.oldTagIndex ## sramAddr ## 0.U(3.W)
+    io.dWay   := cReq.oldTagWay
+    when(s === sWriteBack) {
+        io.dValid := wbCredit =/= 0.U
+        io.dWrite := 1.B
+    }.elsewhen(s === sRefill) {
+        io.dValid := io.refillResp.valid
+        io.dWrite := 0.B
+    }.otherwise{
+        io.dValid := 0.B
+        io.dWrite := 0.B
+    }
+
+    // SRAM Address 的状态机
+    when(s === sWriteBack || s === sRefill) {
+        when(io.dValid) {
+            sramAddr := nxtSramAddr
+        }
+    }.otherwise {
+        sramAddr := 0.U
+    }
+
+    // 写回时序控制
+    wbFifo.enq.valid := RegNext(s === sWriteBack && io.dValid)
+    wbFifo.enq.bits := io.dReadData
+    chisel3.assert(!(wbFifo.enq.valid && !wbFifo.enq.ready))
+
+    // tag 写逻辑生成
+    // 注意：所有进入 Refill Buffer 的请求都需要写 tag
+    io.tagValid := io.req.fire
+    // 只有 flush 操作，无视路直接刷写所有 way 的 tag
+    io.tagFlush := io.req.bits.op === 1.U
+    io.tagIndex := io.req.bits.oldTagIndex
+    io.tagWay   := io.req.bits.oldTagWay
+    io.tagInfo.tag   := io.req.bits.addr(params.log2NumLines + params.log2LineSize - 1, params.log2LineSize)
+    when(io.req.bits.op === 0.U) {
+        // 对于重填请求
+        io.tagInfo.valid := true.B
+    }.otherwise {
+        // 清空请求
+        io.tagInfo.valid := false.B
+        // TAG 的具体值无所谓了
+    }
+
+
+    io.req.ready := s === sIdle
+
+    // 状态机更新
+    when(s === sIdle) {
+        when(io.req.fire) {
+            when(io.req.bits.op === 0.U) {
+                s := Mux(io.req.bits.oldTag.valid && io.req.bits.oldDirty, sWriteBack, sRefill)
+            }.elsewhen(io.req.bits.op === 2.U) {
+                s := Mux(io.req.bits.oldTag.valid && io.req.bits.oldDirty, sWriteBack, sIdle)
+            }
+        }
+    }.elsewhen(s === sWriteBack) {
+        when(lstSramAddr && io.dValid) {
+            // 对于 Flush 请求，直接结束即可
+            s := Mux(cReq.op === 0.U, sRefill, sIdle)
+        }
+    }.elsewhen(s === sRefill) {
+        when(lstSramAddr && io.dValid) {
+            // 重填完成了
+            s := sIdle
+        }
+    }
+}

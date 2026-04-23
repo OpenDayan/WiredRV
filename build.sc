@@ -47,6 +47,10 @@ trait WiredRV
     millSourcePath / "src" / "main" / "resources"
   }
 
+  override def sources = T.sources {
+    millSourcePath / "src" / "main" / "scala"
+  }
+
   def difftestModule = difftest(crossValue)
   def ivyDeps = super.ivyDeps()
 
@@ -68,5 +72,8 @@ trait WiredRV
       v.chiselCrossVersions(chiselVersion)._2,
       v.chiselCrossVersions(chiselVersion)._3
     )
+    override def sources = T.sources {
+      WiredRV.this.millSourcePath / "src" / "test" / "scala"
+    }
   }
 }
