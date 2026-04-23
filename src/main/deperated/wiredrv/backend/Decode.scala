@@ -2,15 +2,50 @@ package wiredrv.backend
 
 import chisel3._
 import chisel3.util._
-import wiredrv.common._
 
-class DecodeIO(implicit p: CoreParams) extends Bundle {
-  val inst = Input(UInt(32.W))
-  val out = Output(new DecodedInst)
+class DecodeInfo extends Bundle {
+  val src1Type = UInt(3.W)
+  val src2Type = UInt(3.W)
+  val fuType = UInt(4.W)
+  val fuOpType = UInt(8.W)
+  val rfWen = Bool()
+  val readRd = Bool()
+  val isRVT64 = Bool()
+  val isRVT32 = Bool()
+  val selImm = UInt(4.W)
+  val isLoad = Bool()
+  val isStore = Bool()
+  val isCacheMaintain = Bool()
+  val cacheMaintainOp = UInt(2.W)
+  val isBranch = Bool()
+  val isJump = Bool()
+  val isCsr = Bool()
+  val isMul = Bool()
+  val isDiv = Bool()
+  val isAtomic = Bool()
+  val isFence = Bool()
+  val flushPipe = Bool()
+  val illegal = Bool()
+}
+
+class DecodedInst(implicit p: CoreParams) extends Bundle {
+  val pc = UInt(p.addrBits.W)
+  val inst = UInt(32.W)
+  val info = new DecodeInfo
+  val rs1 = UInt(5.W)
+  val rs2 = UInt(5.W)
+  val rd = UInt(5.W)
+  val imm = UInt(p.xlen.W)
+  val csrAddr = UInt(12.W)
+  val exceptionCode = UInt(16.W)
+  val isUncached = Bool()
 }
 
 class Decode(implicit p: CoreParams) extends Module {
-  val io = IO(new DecodeIO)
+  val io = IO(new Bundle {
+    val inst = Input(UInt(32.W))
+    val out = Output(new DecodedInst)
+  })
 
   def signExt(value: UInt, fromBits: Int): UInt =
     Cat(Fill(p.xlen - fromBits, value(fromBits - 1)), value(fromBits - 1, 0))

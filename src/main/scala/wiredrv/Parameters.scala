@@ -21,8 +21,7 @@ case class CoreParams(
   dcacheSets: Int = 256,
   dcacheWays: Int = 2,
   dcacheLineBytes: Int = 64,
-  storeQueueDepth: Int = 4,
-  longLatencySlots: Int = 3,
+  longLatencySlots: Int = 4,
   cachedRegions: Seq[AddrRegion] = Seq(AddrRegion(0x80000000L, 0x10000000L)),
   uncachedRegions: Seq[AddrRegion] = Seq(AddrRegion(0x00000000L, 0x80000000L))
 ) {
@@ -44,4 +43,6 @@ case class CoreParams(
   val dcacheSetBits: Int = log2Ceil(dcacheSets)
   val dcacheLineBits: Int = log2Ceil(dcacheLineBytes)
   val dcacheTagBits: Int = addrBits - dcacheSetBits - dcacheLineBits
+
+  val longLatencySlotsBits = log2Ceil(p.longLatencySlots)
 }
