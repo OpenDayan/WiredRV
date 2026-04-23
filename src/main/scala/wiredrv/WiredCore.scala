@@ -2,23 +2,29 @@ package wiredrv
 
 import chisel3._
 import chisel3.util._
+import lmss.axi._
 import wiredrv.bus._
 import wiredrv.frontend._
 
 class WiredCoreIO(implicit p: CoreParams) extends Bundle {
   val inst = Decoupled(new FetchPacket)
-  val mem = new TLBundleUH(p.outerBusWidth)
+  val mem = new AxiBundle(AxiSlvParamsCalc(Seq(
+    AxiParams(addrBits = p.addrBits, idBits = 4, dataBits = p.outerBusWidth),
+    AxiParams(addrBits = p.addrBits, idBits = 4, dataBits = p.outerBusWidth)
+  )))
 }
 
 class WiredCore(implicit p: CoreParams) extends Module {
   val io = IO(new WiredCoreIO)
+  private val innerAxi = AxiParams(addrBits = p.addrBits, idBits = 4, dataBits = p.innerBusWidth)
+  private val outerAxi = AxiParams(addrBits = p.addrBits, idBits = 4, dataBits = p.outerBusWidth)
 
   val frontend = Module(new Frontend)
-  val imemToTl = Module(new BusToTLUH(p.innerBusWidth))
-  val dmemToTl = Module(new BusToTLUH(p.innerBusWidth))
-  val imemWidthUp = Module(new TLUHWidthAdapter(p.innerBusWidth, p.outerBusWidth))
-  val dmemWidthUp = Module(new TLUHWidthAdapter(p.innerBusWidth, p.outerBusWidth))
-  val xbar = Module(new TLUHXbar(p.outerBusWidth, 2))
+  val imemToAxi = Module(new BusToAxi(p.innerBusWidth))
+  val dmemStub = Wire(new AxiBundle(innerAxi))
+  val imemWidthUp = Module(new AxiNarrowToWide(innerAxi, outerAxi, buffer = 4))
+  val dmemWidthUp = Module(new AxiNarrowToWide(innerAxi, outerAxi, buffer = 4))
+  val xbar = Module(new LmssAxiXbar(Seq(outerAxi, outerAxi)))
 
   frontend.io.redirects.foreach { redir =>
     redir.valid := false.B
@@ -28,14 +34,20 @@ class WiredCore(implicit p: CoreParams) extends Module {
 
   io.inst <> frontend.io.inst
 
-  dmemToTl.io.in.a.valid := false.B
-  dmemToTl.io.in.a.bits := 0.U.asTypeOf(dmemToTl.io.in.a.bits)
-  dmemToTl.io.in.d.ready := true.B
+  dmemStub.aw.valid := false.B
+  dmemStub.aw.bits := 0.U.asTypeOf(dmemStub.aw.bits)
+  dmemStub.ar.valid := false.B
+  dmemStub.ar.bits := 0.U.asTypeOf(dmemStub.ar.bits)
+  dmemStub.w.valid := false.B
+  dmemStub.w.bits := 0.U.asTypeOf(dmemStub.w.bits)
+  dmemStub.b.ready := true.B
+  dmemStub.r.ready := true.B
 
-  imemToTl.io.in <> frontend.io.bus
-  imemWidthUp.io.in <> imemToTl.io.out
-  dmemWidthUp.io.in <> dmemToTl.io.out
-  xbar.io.in(0) <> imemWidthUp.io.out
-  xbar.io.in(1) <> dmemWidthUp.io.out
-  io.mem <> xbar.io.out
+  imemToAxi.io.in <> frontend.io.bus
+  imemWidthUp.io.mst <> imemToAxi.io.out
+  dmemWidthUp.io.mst <> dmemStub
+
+  xbar.io.upstream(0) <> imemWidthUp.io.slv
+  xbar.io.upstream(1) <> dmemWidthUp.io.slv
+  io.mem <> xbar.io.downstream.head
 }

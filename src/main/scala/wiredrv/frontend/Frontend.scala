@@ -35,11 +35,13 @@ class Frontend(implicit p: CoreParams) extends Module {
 
   val frontStall = WireDefault(false.B)
 
-  val f1pc = RegInit((p.resetPc - 4L).U(p.addrBits.W))
-  val pc = Mux(anyRedir, PriorityMux(allRedir.map(_.valid), allRedir.map(_.bits)), f1pc + 4.U)
-  when(!frontStall) {
-    f1pc := pc
-  }
+  val npc = Module(new NPC).io
+  npc.redirects := allRedir
+  npc.pc.ready := !frontStall
+  val pc = npc.pc.bits
+
+  val f1Valid = RegInit(0.B)
+  val f1pc = RegEnable(pc, !frontStall)
 
   class ICTag extends Bundle {
     val tag = UInt(p.icacheTagBits.W)
@@ -50,27 +52,8 @@ class Frontend(implicit p: CoreParams) extends Module {
   val icValid = RegInit(0.U.asTypeOf(Vec(p.icacheWays, Vec(p.icacheSets, Bool()))))
   val icTags = Seq.fill(p.icacheWays)(SyncReadMem(p.icacheSets, new ICTag))
   val icDatas = Seq.fill(p.icacheWays)(SyncReadMem(p.icacheSets * beatsPerLine, UInt(p.xlen.W)))
-
-  val f1Valid = RegInit(false.B)
   val f1Hit = WireDefault(false.B)
   val f1Inst = WireDefault(0.U(32.W))
-
-  when(io.ifencei) {
-    icValid := 0.U.asTypeOf(icValid)
-  }
-
-  when(!frontStall) {
-    val hits = icValid.zip(icTags).map { case (v, t) =>
-      val set = p.icacheGetSet(pc)
-      RegNext(!(io.ifencei) && v(set), false.B) && t.read(set).tag === p.icacheGetTag(f1pc)
-    }
-    val insts = VecInit(icDatas.map(_.read(p.icacheGetSet(pc) ## p.icacheGetWord(pc))))
-    f1Hit := VecInit(hits).asUInt.orR
-    f1Inst := Mux(hits(0), insts(0), insts(1))
-    f1Valid := true.B
-  }.elsewhen(anyRedir) {
-    f1Valid := false.B
-  }
 
   val rWay = RegInit(0.U(1.W))
   rWay := rWay + 1.U
@@ -84,6 +67,24 @@ class Frontend(implicit p: CoreParams) extends Module {
   val rSelWay = RegInit(0.U(1.W))
   val rAValid = RegInit(false.B)
   val rDCnt = RegInit(0.U(log2Ceil(beatsPerLine).W))
+
+  when(io.ifencei) {
+    icValid := 0.U.asTypeOf(icValid)
+  }
+
+  when(!f2Refill) {
+    val hits = icValid.zip(icTags).map { case (v, t) =>
+      val set = p.icacheGetSet(pc)
+      RegNext(!(io.ifencei) && v(set), false.B) && t.read(set).tag === p.icacheGetTag(f1pc)
+    }
+    val insts = VecInit(icDatas.map(_.read(p.icacheGetSet(pc) ## p.icacheGetWord(pc))))
+    f1Hit := VecInit(hits).asUInt.orR
+    f1Inst := Mux(hits(0), insts(0), insts(1))
+    f1Valid := true.B
+  }.elsewhen(anyRedir) {
+    f1Valid := false.B
+  }
+
   val rDLast = rDCnt === (beatsPerLine - 1).U
 
   val f2RefillEnd = rDLast && io.bus.d.valid

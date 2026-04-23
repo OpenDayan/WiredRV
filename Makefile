@@ -13,6 +13,7 @@ RISCV_TESTS_HOME ?= $(NOOP_HOME)/third_party/riscv-tests
 RISCV_TEST_ENV ?= $(NOOP_HOME)/tests/riscv-tests/wiredrv
 ISA_SUITE ?= rv64ui
 TEST ?= simple
+CHISEL_VERSION ?= 7.10.0
 EMU_MAX_INSTR ?= 200000
 EMU_MAX_CYCLES ?=
 WORKLOAD_ELF ?= $(NOOP_HOME)/build/workloads/$(ISA_SUITE)-$(TEST).elf
@@ -21,7 +22,7 @@ EMU_CYCLE_FLAG := $(if $(strip $(EMU_MAX_CYCLES)),-C $(EMU_MAX_CYCLES),)
 EMU_CLI_FLAGS := -i $(WORKLOAD_ELF) --diff $(NEMU_REF_SO) -I $(EMU_MAX_INSTR) $(EMU_CYCLE_FLAG) --cli
 
 sim-verilog:
-	mill 'wiredrv[6.6.0].runMain' wiredrv.harness.WiredCoreHarnessTopMain
+	mill 'wiredrv[$(CHISEL_VERSION)].runMain' wiredrv.harness.WiredCoreHarnessTopMain
 
 emu: sim-verilog
 	@$(MAKE) -C difftest emu \
@@ -46,10 +47,20 @@ cli: nemu-ref riscv-test-workload
 		WITH_CHISELDB=$(WITH_CHISELDB) \
 		WITH_CONSTANTIN=$(WITH_CONSTANTIN) \
 		REF=$(if $(REF),$(REF),Nemu)
-	./build/emu $(EMU_CLI_FLAGS)
+	@if [ -t 0 ] && [ -t 1 ]; then \
+		./build/emu $(EMU_CLI_FLAGS); \
+	else \
+		echo "CLI 已构建；当前不是交互终端，跳过启动。"; \
+		echo "请在终端中执行: make run-cli TEST=$(TEST)"; \
+	fi
 
 run-cli: riscv-test-workload nemu-ref
-	./build/emu $(EMU_CLI_FLAGS)
+	@if [ -t 0 ] && [ -t 1 ]; then \
+		./build/emu $(EMU_CLI_FLAGS); \
+	else \
+		echo "run-cli 需要交互终端。"; \
+		exit 1; \
+	fi
 
 nemu-ref:
 	@$(MAKE) -C $(NEMU_HOME) riscv64-nutshell-ref_defconfig
