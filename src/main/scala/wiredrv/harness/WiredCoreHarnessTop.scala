@@ -96,6 +96,81 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   core.io.inst.ready := 1.B
   mem.io.axi <> core.io.mem
 
+  val commitValid = core.io.diffCommitValid
+  val simExit = commitValid && core.io.diffCommitInst === "h0000006b".U
+  val cycleCnt = RegInit(0.U(64.W))
+  val instrCnt = RegInit(0.U(64.W))
+  val instrCntNext = instrCnt + commitValid.asUInt
+
+  cycleCnt := cycleCnt + 1.U
+  when(commitValid) {
+    instrCnt := instrCntNext
+  }
+
+  d0.coreid := 0.U
+  d0.valid := false.B
+  d0.interrupt := 0.U
+  d0.exception := 0.U
+  d0.exceptionPC := core.io.diffCommitPc
+  d0.exceptionInst := core.io.diffCommitInst
+  d0.hasNMI := false.B
+  d0.virtualInterruptIsHvictlInject := false.B
+  d0.irToHS := false.B
+  d0.irToVS := false.B
+
+  d1.coreid := 0.U
+  d1.value := core.io.diffRf
+
+  d2.coreid := 0.U
+  d2.privilegeMode := 3.U
+  d2.mstatus := 0.U
+  d2.sstatus := 0.U
+  d2.mepc := 0.U
+  d2.sepc := 0.U
+  d2.mtval := 0.U
+  d2.stval := 0.U
+  d2.mtvec := 0.U
+  d2.stvec := 0.U
+  d2.mcause := 0.U
+  d2.scause := 0.U
+  d2.satp := 0.U
+  d2.mip := 0.U
+  d2.mie := 0.U
+  d2.mscratch := 0.U
+  d2.sscratch := 0.U
+  d2.mideleg := 0.U
+  d2.medeleg := 0.U
+
+  d3.coreid := 0.U
+  d3.index := 0.U
+  d3.valid := commitValid
+  d3.skip := false.B
+  d3.isRVC := false.B
+  d3.rfwen := core.io.diffCommitRfWen
+  d3.fpwen := false.B
+  d3.vecwen := false.B
+  d3.v0wen := false.B
+  d3.wpdest := core.io.diffCommitRd
+  d3.wdest := core.io.diffCommitRd
+  d3.otherwpdest := VecInit(Seq.fill(16)(0.U(d3.wpdest.getWidth.W)))
+  d3.pc := core.io.diffCommitPc
+  d3.instr := core.io.diffCommitInst
+  d3.robIdx := 0.U
+  d3.lqIdx := 0.U
+  d3.sqIdx := 0.U
+  d3.isLoad := core.io.diffCommitIsLoad
+  d3.isStore := core.io.diffCommitIsStore
+  d3.nFused := 0.U
+  d3.setSpecial(isExit = simExit)
+
+  d4.coreid := 0.U
+  d4.hasTrap := simExit
+  d4.cycleCnt := cycleCnt
+  d4.instrCnt := instrCntNext
+  d4.hasWFI := false.B
+  d4.code := core.io.diffRf(10)
+  d4.pc := core.io.diffCommitPc
+
   io.pc := core.io.inst.bits.pc
   io.inst.valid := core.io.inst.fire
   io.inst.bits := core.io.inst.bits.inst
