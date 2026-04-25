@@ -25,12 +25,58 @@ class AxiDiffMem(axiP: AxiParams)(implicit p: CoreParams) extends Module {
   def memIndex(addr: UInt): UInt = (addr - memBase) >> 3
   def beatStep(size: UInt): UInt = (1.U(p.addrBits.W) << size)
 
-  io.axi.aw.ready := false.B
-  io.axi.w.ready := false.B
-  io.axi.b.valid := false.B
-  io.axi.b.bits := 0.U.asTypeOf(io.axi.b.bits)
+  val wAwValid = RegInit(false.B)
+  val wAw = Reg(new AWFlit(axiP))
+  val wDataValid = RegInit(false.B)
+  val wData = Reg(new WFlit(axiP))
+  val wBValid = RegInit(false.B)
+  val wBId = Reg(UInt(axiP.idBits.W))
+  val wBUser = Reg(UInt(axiP.userBits.W))
 
-  val rIdle :: rResp :: Nil = Enum(2)
+  io.axi.aw.ready := !wAwValid && !wBValid
+  io.axi.w.ready := !wDataValid && !wBValid
+
+  when(io.axi.aw.fire) {
+    wAwValid := true.B
+    wAw := io.axi.aw.bits
+  }
+  when(io.axi.w.fire) {
+    wDataValid := true.B
+    wData := io.axi.w.bits
+  }
+
+  val writeAwValid = wAwValid || io.axi.aw.fire
+  val writeDataValid = wDataValid || io.axi.w.fire
+  val writeAw = Mux(wAwValid, wAw, io.axi.aw.bits)
+  val writeData = Mux(wDataValid, wData, io.axi.w.bits)
+  val writeFire = !wBValid && writeAwValid && writeDataValid
+  val writeAlignedAddr = Cat(writeAw.addr(p.addrBits - 1, log2Ceil(beatBytes)), 0.U(log2Ceil(beatBytes).W))
+  val writeBytes = writeData.data.asTypeOf(Vec(axiP.dataBits / 8, UInt(8.W)))
+
+  for (i <- 0 until lanes) {
+    mem.write(i).valid := writeFire
+    mem.write(i).index := memIndex(writeAlignedAddr + (i * 8).U)
+    mem.write(i).data := VecInit((0 until 8).map(j => writeBytes(i * 8 + j))).asTypeOf(mem.write(i).data)
+    mem.write(i).mask := VecInit((0 until 8).map(j => Fill(8, writeData.strb(i * 8 + j)))).asTypeOf(mem.write(i).mask)
+  }
+
+  when(writeFire) {
+    wAwValid := false.B
+    wDataValid := false.B
+    wBValid := true.B
+    wBId := writeAw.id
+    wBUser := writeAw.user
+  }
+  when(io.axi.b.fire) {
+    wBValid := false.B
+  }
+
+  io.axi.b.valid := wBValid
+  io.axi.b.bits.id := wBId
+  io.axi.b.bits.resp := 0.U
+  io.axi.b.bits.user := wBUser
+
+  val rIdle :: rWait :: rResp :: Nil = Enum(3)
   val rState = RegInit(rIdle)
   val rAddr = Reg(UInt(p.addrBits.W))
   val rLenLeft = Reg(UInt(axiP.lenBits.W))
@@ -40,18 +86,24 @@ class AxiDiffMem(axiP: AxiParams)(implicit p: CoreParams) extends Module {
 
   io.axi.ar.ready := rState === rIdle
   when(io.axi.ar.fire) {
-    rState := rResp
+    rState := rWait
     rAddr := io.axi.ar.bits.addr
     rLenLeft := io.axi.ar.bits.len
     rSize := io.axi.ar.bits.size
     rId := io.axi.ar.bits.id
     rUser := io.axi.ar.bits.user
   }
+  when(rState === rWait) {
+    rState := rResp
+  }
 
-  val alignedAddr = Cat(rAddr(p.addrBits - 1, log2Ceil(beatBytes)), 0.U(log2Ceil(beatBytes).W))
+  val nextReadAddr = rAddr + beatStep(rSize)
+  val fullBeatRead = rSize >= log2Ceil(beatBytes).U
+  val readAddr = Mux(rState === rResp && io.axi.r.fire && rLenLeft =/= 0.U && fullBeatRead, nextReadAddr, rAddr)
+  val alignedAddr = Cat(readAddr(p.addrBits - 1, log2Ceil(beatBytes)), 0.U(log2Ceil(beatBytes).W))
   val readDataLanes = Wire(Vec(lanes, UInt(64.W)))
   for (i <- 0 until lanes) {
-    readDataLanes(i) := mem.readAndHold(memIndex(alignedAddr + (i * 8).U), rState === rResp).asUInt
+    readDataLanes(i) := mem.readAndHold(memIndex(alignedAddr + (i * 8).U), rState === rWait || rState === rResp).asUInt
   }
   val readDataWide = Cat((lanes - 1 to 0 by -1).map(readDataLanes(_)))
 
@@ -66,7 +118,7 @@ class AxiDiffMem(axiP: AxiParams)(implicit p: CoreParams) extends Module {
     when(rLenLeft === 0.U) {
       rState := rIdle
     }.otherwise {
-      rAddr := rAddr + beatStep(rSize)
+      rAddr := nextReadAddr
       rLenLeft := rLenLeft - 1.U
     }
   }

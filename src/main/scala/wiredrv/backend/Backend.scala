@@ -4,7 +4,7 @@ import chisel3._
 import chisel3.util._
 import wiredrv.CoreParams
 import wiredrv.bus._
-import wiredrv.bus.BusOp.ReadOnly
+import wiredrv.bus.BusOp.{ReadOnly, StoreOnly}
 import wiredrv.frontend.FetchPacket
 import xs.utils.sram.SRAMTemplate
 
@@ -30,7 +30,6 @@ class BackendUop(implicit p: CoreParams) extends Bundle {
 
 class DCacheTag(implicit p: CoreParams) extends Bundle {
   val tag = UInt(p.dcacheTagBits.W)
-  val dirty = Bool()
 }
 
 class StoreQueueEntry(implicit p: CoreParams) extends Bundle {
@@ -45,14 +44,14 @@ class StoreQueueEntry(implicit p: CoreParams) extends Bundle {
 
 class Backend(implicit p: CoreParams) extends Module {
   require(p.xlen == 64, "Backend currently implements RV64 data path")
-  require(p.innerBusWidth == 32, "Backend refill path currently uses 32-bit bus beats")
+  require(p.outerBusWidth == p.xlen, "Backend data refill path expects one bus beat per cache word")
   require(p.dcacheWays == 2, "Backend currently assumes a 2-way data cache")
 
   val io = IO(new Bundle {
     val inst = Flipped(Decoupled(new FetchPacket))
     val redirects = Output(Vec(3, Valid(UInt(p.addrBits.W))))
     val ifencei = Output(Bool())
-    val bus = new BusBundle(p.innerBusWidth)
+    val bus = new BusBundle(p.outerBusWidth)
     val commit = Decoupled(new FetchPacket)
     val diffCommitValid = Output(Bool())
     val diffCommitPc = Output(UInt(p.addrBits.W))
@@ -69,11 +68,9 @@ class Backend(implicit p: CoreParams) extends Module {
   private val wordsPerLine = p.dcacheLineBytes / bytesPerWord
   private val dataSetCount = p.dcacheSets * wordsPerLine
   private val dataIdxBits = log2Ceil(dataSetCount)
-  private val busBytes = p.innerBusWidth / 8
+  private val busBytes = p.outerBusWidth / 8
   private val beatsPerLine = p.dcacheLineBytes / busBytes
   private val beatCntBits = log2Ceil(beatsPerLine)
-  private val refillWordBeat = p.xlen / p.innerBusWidth
-  require(refillWordBeat == 2, "Backend refill currently packs two bus beats into one XLEN word")
 
   private def dcacheGetTag(addr: UInt): UInt =
     addr(p.addrBits - 1, p.dcacheSetBits + p.dcacheLineBits)
@@ -89,6 +86,9 @@ class Backend(implicit p: CoreParams) extends Module {
 
   private def lineBase(addr: UInt): UInt =
     Cat(addr(p.addrBits - 1, p.dcacheLineBits), 0.U(p.dcacheLineBits.W))
+
+  private def lineBaseFromTag(tag: UInt, set: UInt): UInt =
+    Cat(tag, set, 0.U(p.dcacheLineBits.W))
 
   private def inRegions(addr: UInt, regions: Seq[wiredrv.AddrRegion]): Bool =
     regions
@@ -165,8 +165,12 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_storeEntry = Reg(new StoreQueueEntry)
   val w_cacheHit = Reg(Bool())
   val w_hitWay = Reg(UInt(log2Ceil(p.dcacheWays).W))
+  val w_replaceWay = Reg(UInt(log2Ceil(p.dcacheWays).W))
   val w_cacheMiss = Reg(Bool())
   val w_isCmo = Reg(Bool())
+  val w_victimTag = Reg(new DCacheTag)
+  val w_victimDirty = Reg(Bool())
+  val w_cmoDirty = Reg(Bool())
 
   val v_valid = RegInit(VecInit(Seq.fill(p.longLatencySlots)(false.B)))
   val v_gpr = Reg(Vec(p.longLatencySlots, UInt(5.W)))
@@ -176,20 +180,23 @@ class Backend(implicit p: CoreParams) extends Module {
   val decoder = Module(new Decode)
 
   val dcValid = RegInit(0.U.asTypeOf(Vec(p.dcacheWays, Vec(p.dcacheSets, Bool()))))
+  val dcDirty = RegInit(0.U.asTypeOf(Vec(p.dcacheWays, Vec(p.dcacheSets, Bool()))))
   val dcTags = Seq.fill(p.dcacheWays)(Module(new SRAMTemplate(new DCacheTag, p.dcacheSets, singlePort = true)))
   val dcDatas = Seq.fill(p.dcacheWays)(Module(new SRAMTemplate(UInt(p.xlen.W), dataSetCount, singlePort = true, useBitmask = true)))
 
   val sq = RegInit(VecInit(Seq.fill(2)(0.U.asTypeOf(new StoreQueueEntry))))
 
-  val rIdle :: rRefill :: rCmo :: Nil = Enum(3)
+  val rIdle :: rWbRead :: rWbCapture :: rWbReq :: rRefill :: rCmo :: Nil = Enum(6)
   val r_state = RegInit(rIdle)
   val r_aValid = RegInit(false.B)
   val r_way = Reg(UInt(log2Ceil(p.dcacheWays).W))
   val r_set = Reg(UInt(p.dcacheSetBits.W))
   val r_tag = Reg(UInt(p.dcacheTagBits.W))
   val r_addr = Reg(UInt(p.addrBits.W))
+  val r_wbAddr = Reg(UInt(p.addrBits.W))
+  val r_wbData = Reg(UInt(p.xlen.W))
   val r_cnt = Reg(UInt(beatCntBits.W))
-  val r_half = Reg(UInt(p.innerBusWidth.W))
+  val r_afterWbRefill = Reg(Bool())
   val r_cmoHit = Reg(Bool())
   val r_cmoOp = Reg(UInt(LSUOp.width.W))
   val nextReplaceWay = RegInit(0.U(log2Ceil(p.dcacheWays).W))
@@ -333,10 +340,8 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_noVSlot = d_needVSlot && !vAllocator.io.allocate.valid
   val d_wawHaz = d_dec.info.rwen && d_rdVHaz
   val d_rawHaz = d_rs1VHaz || d_rs2VHaz
-  val d_storeQueueFull = sq(0).valid && sq(1).valid
-  val d_sqStall = d_dec.info.isStore && d_storeQueueFull
   val d_refillStall = r_state =/= rIdle
-  val d_hazardStall = d_rawHaz || d_wawHaz || d_jrBlocked || d_noVSlot || d_sqStall || d_refillStall
+  val d_hazardStall = d_rawHaz || d_wawHaz || d_jrBlocked || d_noVSlot || d_refillStall
 
   io.inst.ready := !d_hazardStall
   val d_fire = io.inst.valid && io.inst.ready
@@ -422,6 +427,10 @@ class Backend(implicit p: CoreParams) extends Module {
   })
   val e_hit = e_canCommit && e_uop.info.isLsu && !e_uop.isUncached && e_hits.asUInt.orR
   val e_hitWay = Mux(e_hits(0), 0.U, 1.U)
+  val e_replaceWay = nextReplaceWay
+  val e_victimTag = Mux(e_replaceWay === 0.U, dcTags(0).io.r.resp.data(0), dcTags(1).io.r.resp.data(0))
+  val e_victimDirty = dcValid(e_replaceWay)(e_cacheSet) && dcDirty(e_replaceWay)(e_cacheSet)
+  val e_cmoDirty = e_hit && dcDirty(e_hitWay)(e_cacheSet)
   val e_cacheData = Mux(e_hits(0), dcDatas(0).io.r.resp.data(0), dcDatas(1).io.r.resp.data(0))
 
   val e_storeMask = storeMask(e_uop.info.fuOpType, e_uop.lsuAddr)
@@ -511,6 +520,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val sqDrain = sqHasEntry && r_state === rIdle && !d_readData
 
   when(sqDrain) {
+    dcDirty(sqDrainEntry.way)(sqDrainEntry.set) := true.B
     for (i <- 0 until p.dcacheWays) {
       when(sqDrainEntry.way === i.U) {
         dc_data_w_valid(i) := true.B
@@ -535,6 +545,7 @@ class Backend(implicit p: CoreParams) extends Module {
       sqAfterClear(i).valid := false.B
     }
   }
+  assert(!(w_storeCommit && sqAfterClear(0).valid && sqAfterClear(1).valid), "Store Queue overflow")
 
   val sqFinal = WireDefault(sqAfterClear)
   when(w_storeCommit) {
@@ -554,52 +565,101 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val w_startRefill = w_canCommit && w_cacheMiss && r_state === rIdle
   val w_startCmo = w_canCommit && w_isCmo && r_state === rIdle
+  val w_cmoWriteback = w_startCmo && w_cacheHit && w_cmoDirty && (
+    w_uop.info.fuOpType === LSUOp.cboClean ||
+      w_uop.info.fuOpType === LSUOp.cboFlush
+  )
+  val r_wbBusAddr = r_wbAddr + (r_cnt << wordOffsetBits)
+  val r_wbDataResp = Mux(r_way === 0.U, dcDatas(0).io.r.resp.data(0), dcDatas(1).io.r.resp.data(0))
+  val r_wbReq = r_state === rWbReq
 
-  io.bus.a.valid := r_state === rRefill && r_aValid
-  io.bus.a.bits.op := ReadOnly
+  io.bus.a.valid := (r_state === rRefill || r_wbReq) && r_aValid
+  io.bus.a.bits.op := Mux(r_wbReq, StoreOnly, ReadOnly)
   io.bus.a.bits.id := 1.U
-  io.bus.a.bits.size := log2Ceil(p.dcacheLineBytes).U
-  io.bus.a.bits.address := r_addr
+  io.bus.a.bits.size := Mux(r_wbReq, log2Ceil(bytesPerWord).U, log2Ceil(p.dcacheLineBytes).U)
+  io.bus.a.bits.address := Mux(r_wbReq, r_wbBusAddr, r_addr)
   io.bus.a.bits.mask := Fill(busBytes, true.B)
-  io.bus.a.bits.data := 0.U
-  io.bus.d.ready := r_state === rRefill
+  io.bus.a.bits.data := Mux(r_wbReq, r_wbData, 0.U)
+  io.bus.d.ready := r_state === rRefill || r_wbReq
 
   when(w_startRefill) {
-    r_state := rRefill
-    r_aValid := true.B
-    r_way := nextReplaceWay
+    r_way := w_replaceWay
     r_set := dcacheGetSet(w_uop.lsuAddr)
     r_tag := dcacheGetTag(w_uop.lsuAddr)
     r_addr := lineBase(w_uop.lsuAddr)
+    r_wbAddr := lineBaseFromTag(w_victimTag.tag, dcacheGetSet(w_uop.lsuAddr))
     r_cnt := 0.U
-    nextReplaceWay := nextReplaceWay + 1.U
+    r_afterWbRefill := true.B
+    when(w_victimDirty) {
+      r_state := rWbRead
+      r_aValid := false.B
+    }.otherwise {
+      r_state := rRefill
+      r_aValid := true.B
+    }
+    nextReplaceWay := w_replaceWay + 1.U
   }.elsewhen(w_startCmo) {
-    r_state := rCmo
     r_way := w_hitWay
     r_set := dcacheGetSet(w_uop.lsuAddr)
     r_tag := dcacheGetTag(w_uop.lsuAddr)
     r_addr := lineBase(w_uop.lsuAddr)
+    r_wbAddr := lineBase(w_uop.lsuAddr)
+    r_cnt := 0.U
+    r_afterWbRefill := false.B
     r_cmoHit := w_cacheHit
     r_cmoOp := w_uop.info.fuOpType
+    when(w_cmoWriteback) {
+      r_state := rWbRead
+      r_aValid := false.B
+    }.otherwise {
+      r_state := rCmo
+    }
   }
 
   when(io.bus.a.fire) {
     r_aValid := false.B
   }
 
-  when(r_state === rRefill && io.bus.d.fire) {
-    val refillWord = r_cnt(beatCntBits - 1, 1)
-    val refillIdx = r_set ## refillWord
-    when(r_cnt(0) === 0.U) {
-      r_half := io.bus.d.bits.data
+  when(r_state === rWbRead) {
+    for (i <- 0 until p.dcacheWays) {
+      when(r_way === i.U) {
+        dcDatas(i).io.r.req.valid := true.B
+        dcDatas(i).io.r.req.bits.apply(r_set ## r_cnt)
+      }
+    }
+    r_state := rWbCapture
+  }
+
+  when(r_state === rWbCapture) {
+    r_wbData := r_wbDataResp
+    r_aValid := true.B
+    r_state := rWbReq
+  }
+
+  when(r_state === rWbReq && io.bus.d.fire) {
+    when(r_cnt === (beatsPerLine - 1).U) {
+      r_cnt := 0.U
+      when(r_afterWbRefill) {
+        r_state := rRefill
+        r_aValid := true.B
+      }.otherwise {
+        r_state := rCmo
+      }
     }.otherwise {
-      for (i <- 0 until p.dcacheWays) {
-        when(r_way === i.U) {
-          dc_data_w_valid(i) := true.B
-          dc_data_w_idx(i) := refillIdx
-          dc_data_w_data(i) := Cat(io.bus.d.bits.data, r_half)
-          dc_data_w_mask(i) := Fill(p.xlen, true.B)
-        }
+      r_cnt := r_cnt + 1.U
+      r_state := rWbRead
+    }
+  }
+
+  when(r_state === rRefill && io.bus.d.fire) {
+    val refillWord = r_cnt
+    val refillIdx = r_set ## refillWord
+    for (i <- 0 until p.dcacheWays) {
+      when(r_way === i.U) {
+        dc_data_w_valid(i) := true.B
+        dc_data_w_idx(i) := refillIdx
+        dc_data_w_data(i) := io.bus.d.bits.data
+        dc_data_w_mask(i) := Fill(p.xlen, true.B)
       }
     }
 
@@ -609,11 +669,11 @@ class Backend(implicit p: CoreParams) extends Module {
         when(r_way === i.U) {
           val tagData = Wire(new DCacheTag)
           tagData.tag := r_tag
-          tagData.dirty := false.B
           dc_tag_w_valid(i) := true.B
           dc_tag_w_set(i) := r_set
           dc_tag_w_data(i) := tagData
           dcValid(i)(r_set) := true.B
+          dcDirty(i)(r_set) := false.B
         }
       }
       r_state := rIdle
@@ -624,10 +684,11 @@ class Backend(implicit p: CoreParams) extends Module {
     when(r_cmoHit) {
       when(r_cmoOp === LSUOp.cboInval || r_cmoOp === LSUOp.cboFlush) {
         dcValid(r_way)(r_set) := false.B
+        dcDirty(r_way)(r_set) := false.B
       }.otherwise {
         val tagData = Wire(new DCacheTag)
         tagData.tag := r_tag
-        tagData.dirty := false.B
+        dcDirty(r_way)(r_set) := false.B
         for (i <- 0 until p.dcacheWays) {
           when(r_way === i.U) {
             dc_tag_w_valid(i) := true.B
@@ -662,8 +723,12 @@ class Backend(implicit p: CoreParams) extends Module {
   w_storeEntry := e_storeEntry
   w_cacheHit := e_hit
   w_hitWay := e_hitWay
+  w_replaceWay := e_replaceWay
   w_cacheMiss := e_cacheMiss
   w_isCmo := e_isCmo
+  w_victimTag := e_victimTag
+  w_victimDirty := e_victimDirty
+  w_cmoDirty := e_cmoDirty
 
   when(d_fire) {
     e_valid := true.B

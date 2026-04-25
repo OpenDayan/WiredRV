@@ -31,24 +31,42 @@ class BusToAxi(width: Int)(implicit p: CoreParams) extends Module {
     beats
   }
 
-  val sIdle :: sReadResp :: Nil = Enum(2)
+  val sIdle :: sReadResp :: sWriteSend :: sWriteResp :: Nil = Enum(4)
   val state = RegInit(sIdle)
   val reqId = Reg(UInt(4.W))
   val reqSize = Reg(UInt(4.W))
+  val reqAddr = Reg(UInt(p.addrBits.W))
+  val reqMask = Reg(UInt((width / 8).W))
+  val reqData = Reg(UInt(width.W))
+  val awSent = Reg(Bool())
+  val wSent = Reg(Bool())
 
   val isRead = io.in.a.bits.op === BusOp.ReadOnly
   val isWrite = io.in.a.bits.op === BusOp.StoreOnly
 
   when(io.in.a.valid) {
     assert(isRead || isWrite, "BusToAxi only supports ReadOnly/StoreOnly")
-    assert(!isWrite, "current BusToAxi only wires the read path")
   }
 
-  io.out.aw.valid := false.B
-  io.out.aw.bits := 0.U.asTypeOf(io.out.aw.bits)
-  io.out.w.valid := false.B
-  io.out.w.bits := 0.U.asTypeOf(io.out.w.bits)
-  io.out.b.ready := true.B
+  io.out.aw.valid := state === sWriteSend && !awSent
+  io.out.aw.bits.id := reqId
+  io.out.aw.bits.addr := reqAddr
+  io.out.aw.bits.len := 0.U
+  io.out.aw.bits.size := reqSize
+  io.out.aw.bits.burst := AxiComputeFunction.INCR
+  io.out.aw.bits.lock := 0.U
+  io.out.aw.bits.cache := 0.U
+  io.out.aw.bits.prot := 0.U
+  io.out.aw.bits.qos := 0.U
+  io.out.aw.bits.region := 0.U
+  io.out.aw.bits.user := 0.U
+
+  io.out.w.valid := state === sWriteSend && !wSent
+  io.out.w.bits.data := reqData
+  io.out.w.bits.strb := reqMask
+  io.out.w.bits.last := 1.U
+  io.out.w.bits.user := 0.U
+  io.out.b.ready := state === sWriteResp && io.in.d.ready
 
   io.out.ar.valid := state === sIdle && io.in.a.valid && isRead
   io.out.ar.bits.id := io.in.a.bits.id
@@ -63,12 +81,12 @@ class BusToAxi(width: Int)(implicit p: CoreParams) extends Module {
   io.out.ar.bits.region := 0.U
   io.out.ar.bits.user := 0.U
 
-  io.in.a.ready := io.out.ar.ready && state === sIdle && isRead
+  io.in.a.ready := state === sIdle && ((isRead && io.out.ar.ready) || isWrite)
 
-  io.in.d.valid := state === sReadResp && io.out.r.valid
+  io.in.d.valid := (state === sReadResp && io.out.r.valid) || (state === sWriteResp && io.out.b.valid)
   io.in.d.bits.id := reqId
   io.in.d.bits.size := reqSize
-  io.in.d.bits.data := io.out.r.bits.data
+  io.in.d.bits.data := Mux(state === sReadResp, io.out.r.bits.data, 0.U)
   io.out.r.ready := state === sReadResp && io.in.d.ready
 
   when(io.out.ar.fire) {
@@ -77,7 +95,32 @@ class BusToAxi(width: Int)(implicit p: CoreParams) extends Module {
     state := sReadResp
   }
 
+  when(io.in.a.fire && isWrite) {
+    reqId := io.in.a.bits.id
+    reqSize := io.in.a.bits.size
+    reqAddr := io.in.a.bits.address
+    reqMask := io.in.a.bits.mask
+    reqData := io.in.a.bits.data
+    awSent := false.B
+    wSent := false.B
+    state := sWriteSend
+  }
+
+  when(io.out.aw.fire) {
+    awSent := true.B
+  }
+  when(io.out.w.fire) {
+    wSent := true.B
+  }
+  when(state === sWriteSend && (awSent || io.out.aw.fire) && (wSent || io.out.w.fire)) {
+    state := sWriteResp
+  }
+
   when(io.out.r.fire && io.out.r.bits._last) {
+    state := sIdle
+  }
+
+  when(io.out.b.fire) {
     state := sIdle
   }
 }
