@@ -6,6 +6,6 @@
 	url = https://github.com/riscv-software-src/riscv-tests.git
 [submodule "third_party/LaomaSubsystem"]
 	path = third_party/LaomaSubsystem
-	url = https://github.com/Siudya/LaomaSubsystem.git
+	url = https://anyifei@git.rvnpu.cn/rvnpu/LaomaSubsystem.git
 [submodule "LaomaSubsystem"]
 	url = https://git.rvnpu.cn/rvnpu/LaomaSubsystem.git

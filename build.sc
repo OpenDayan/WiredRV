@@ -195,7 +195,7 @@ trait WiredRV
   }
 
   def difftestModule = difftest(crossValue)
-  def lmssModule = if (chiselVersion == "7.10.0") Some(lmss(chiselVersion)) else None
+  def lmssModule = None
   def ivyDeps = super.ivyDeps()
   override def moduleDeps = super.moduleDeps ++ lmssModule.toSeq
 

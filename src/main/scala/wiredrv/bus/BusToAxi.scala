@@ -116,7 +116,7 @@ class BusToAxi(width: Int)(implicit p: CoreParams) extends Module {
     state := sWriteResp
   }
 
-  when(io.out.r.fire && io.out.r.bits._last) {
+  when(io.out.r.fire && io.out.r.bits.last.asBool) {
     state := sIdle
   }
 

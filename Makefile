@@ -3,6 +3,7 @@
 
 NOOP_HOME ?= $(abspath .)
 export NOOP_HOME
+MILL ?= ./mill
 NEMU_HOME ?= /workspace/NEMU
 export NEMU_HOME
 NEMU_REF_SO ?= $(NEMU_HOME)/build/riscv64-nemu-interpreter-so
@@ -31,7 +32,7 @@ WAVE_PATH ?= $(WAVE_DIR)/$(ISA_SUITE)-$(TEST).fst
 EMU_WAVE_FLAGS := -i $(WORKLOAD_ELF) --diff $(NEMU_REF_SO) -I $(EMU_MAX_INSTR) $(EMU_CYCLE_FLAG) --dump-wave-full --wave-path=$(WAVE_PATH) -e $(WAVE_END)
 
 sim-verilog:
-	mill 'wiredrv[$(CHISEL_VERSION)].runMain' wiredrv.harness.WiredCoreHarnessTopMain
+	$(MILL) 'wiredrv[$(CHISEL_VERSION)].runMain' wiredrv.harness.WiredCoreHarnessTopMain
 
 emu: sim-verilog
 	@$(MAKE) -C difftest emu \
