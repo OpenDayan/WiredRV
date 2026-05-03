@@ -113,7 +113,8 @@ class Frontend(implicit p: CoreParams) extends Module {
   val rDLast = rDCnt === (beatsPerLine - 1).U
 
   val f2RefillEnd = rDLast && io.bus.d.valid
-  frontStall := f2SkidV || f2Refill
+  val f2Hold = f2Valid && !io.inst.ready && !backRedir
+  frontStall := f2Hold || f2Refill
 
   when(!frontStall) {
     f2Valid := f1Valid && !anyRedir && f1Hit
@@ -135,9 +136,12 @@ class Frontend(implicit p: CoreParams) extends Module {
     io.inst.valid := f2Valid
     io.inst.bits := f2Inst
   }.otherwise {
-    f2SkidV := f2SkidV && !io.inst.ready && !backRedir
-    io.inst.valid := f2SkidV
-    io.inst.bits := f2Skid
+    f2SkidV := false.B
+    when(backRedir) {
+      f2Valid := false.B
+    }
+    io.inst.valid := f2Valid
+    io.inst.bits := f2Inst
     f2Refill := f2Refill && !f2RefillEnd
   }
 

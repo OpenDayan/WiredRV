@@ -59,7 +59,7 @@ class Decode(implicit p: CoreParams) extends Module {
   info.illegal := decodeBits(7)(0)
   info.rs1en := decodeBits(0) === SrcType.reg
   info.rs2en := decodeBits(1) === SrcType.reg
-  info.rden := info.rs1en || info.rs2en
+  info.rden := info.rwen
   info.isRVT64 := true.B
   info.isRVT32 := false.B
   info.isLsu := decodeBits(2) === FuType.lsu

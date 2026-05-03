@@ -44,5 +44,9 @@ case class CoreParams(
   val dcacheLineBits: Int = log2Ceil(dcacheLineBytes)
   val dcacheTagBits: Int = addrBits - dcacheSetBits - dcacheLineBits
 
+  def dcacheGetTag(addr: UInt):  UInt = addr(addrBits - 1, dcacheSetBits + dcacheLineBits)
+  def dcacheGetSet(addr: UInt):  UInt = addr(dcacheSetBits + dcacheLineBits - 1, dcacheLineBits)
+  def dcacheGetWord(addr: UInt): UInt = addr(dcacheLineBits - 1, log2Ceil(xlen / 8))
+
   val longLatencySlotsBits = log2Ceil(longLatencySlots)
 }

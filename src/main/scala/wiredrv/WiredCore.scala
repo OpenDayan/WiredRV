@@ -31,8 +31,9 @@ class WiredCore(implicit p: CoreParams) extends Module {
   val frontend = Module(new Frontend)
   val backend = Module(new Backend)
   val imemToAxi = Module(new BusToAxi(p.innerBusWidth))
-  val dmemToAxi = Module(new BusToAxi(p.outerBusWidth))
+  val dmemToAxi = Module(new BusToAxi(p.innerBusWidth))
   val imemWidthUp = Module(new AxiNarrowToWide(innerAxi, outerAxi, buffer = 4))
+  val dmemWidthUp = Module(new AxiNarrowToWide(innerAxi, outerAxi, buffer = 4))
   val xbar = Module(new LmssAxiXbar(Seq(outerAxi, outerAxi)))
 
   backend.io.inst <> frontend.io.inst
@@ -54,8 +55,9 @@ class WiredCore(implicit p: CoreParams) extends Module {
   imemToAxi.io.in <> frontend.io.bus
   dmemToAxi.io.in <> backend.io.bus
   imemWidthUp.io.mst <> imemToAxi.io.out
+  dmemWidthUp.io.mst <> dmemToAxi.io.out
 
   xbar.io.upstream(0) <> imemWidthUp.io.slv
-  xbar.io.upstream(1) <> dmemToAxi.io.out
+  xbar.io.upstream(1) <> dmemWidthUp.io.slv
   io.mem <> xbar.io.downstream.head
 }
