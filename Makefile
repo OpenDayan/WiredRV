@@ -30,6 +30,7 @@ RISCV_TEST_ENV ?= $(NOOP_HOME)/tests/riscv-tests/wiredrv
 ISA_SUITE ?= rv64ui
 TEST ?= simple
 TESTS ?= $(TEST)
+RISCV_ARCH ?= rv64i
 TEST_JOBS ?= $(shell n=$$(nproc 2>/dev/null || echo 1); if [ $$n -gt 8 ]; then echo 8; else echo $$n; fi)
 
 EMU_MAX_INSTR ?= 200000
@@ -125,7 +126,7 @@ $(WORKLOAD_ELF): $(RISCV_TEST_ENV)/riscv_test.h $(RISCV_TEST_ENV)/link.ld \
 		$(RISCV_TESTS_HOME)/isa/macros/scalar/test_macros.h \
 		$(RISCV_TESTS_HOME)/env/encoding.h
 	@mkdir -p $(@D)
-	$(RISCV_GCC) -march=rv64i -mabi=lp64 -mcmodel=medany -static \
+	$(RISCV_GCC) -march=$(RISCV_ARCH) -mabi=lp64 -mcmodel=medany -static \
 		-nostdlib -nostartfiles \
 		-I$(RISCV_TEST_ENV) \
 		-I$(RISCV_TESTS_HOME)/isa/macros/scalar \

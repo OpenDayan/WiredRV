@@ -19,6 +19,7 @@ object FuType {
   val jmp = 3.U(width.W)
   val lsu = 4.U(width.W)
   val csr = 5.U(width.W)
+  val mdu = 6.U(width.W)
 }
 
 object ImmSel {
@@ -73,6 +74,23 @@ object CsrOp {
   val csrrs = 2.U(width.W)
   val csrrc = 3.U(width.W)
   val ecall = 4.U(width.W)
+}
+
+object MduOp {
+  val width = 4
+  val mul = 0.U(width.W)
+  val mulh = 1.U(width.W)
+  val mulhsu = 2.U(width.W)
+  val mulhu = 3.U(width.W)
+  val div = 4.U(width.W)
+  val divu = 5.U(width.W)
+  val rem = 6.U(width.W)
+  val remu = 7.U(width.W)
+  val mulw = 8.U(width.W)
+  val divw = 9.U(width.W)
+  val divuw = 10.U(width.W)
+  val remw = 11.U(width.W)
+  val remuw = 12.U(width.W)
 }
 
 object LSUOp {
@@ -163,6 +181,22 @@ object RV64IInstructions {
   val EBREAK = BitPat("b00000000000100000000000001110011")
 }
 
+object RV64MInstructions {
+  val MUL = BitPat("b0000001??????????000?????0110011")
+  val MULH = BitPat("b0000001??????????001?????0110011")
+  val MULHSU = BitPat("b0000001??????????010?????0110011")
+  val MULHU = BitPat("b0000001??????????011?????0110011")
+  val DIV = BitPat("b0000001??????????100?????0110011")
+  val DIVU = BitPat("b0000001??????????101?????0110011")
+  val REM = BitPat("b0000001??????????110?????0110011")
+  val REMU = BitPat("b0000001??????????111?????0110011")
+  val MULW = BitPat("b0000001??????????000?????0111011")
+  val DIVW = BitPat("b0000001??????????100?????0111011")
+  val DIVUW = BitPat("b0000001??????????101?????0111011")
+  val REMW = BitPat("b0000001??????????110?????0111011")
+  val REMUW = BitPat("b0000001??????????111?????0111011")
+}
+
 abstract class RVDecodeBase {
   def generate(): List[UInt]
 }
@@ -196,6 +230,7 @@ trait DecodeConstants {
 
 object RV64IDecodeTable extends DecodeConstants {
   import RV64IInstructions._
+  import RV64MInstructions._
 
   val table: Array[(BitPat, List[UInt])] = Array(
     NEMU_TRAP -> RVDecode().generate(),
@@ -248,6 +283,19 @@ object RV64IDecodeTable extends DecodeConstants {
     SLLW   -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.alu, fuOp = AluOp.sllw, rwen = true).generate(),
     SRLW   -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.alu, fuOp = AluOp.srlw, rwen = true).generate(),
     SRAW   -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.alu, fuOp = AluOp.sraw, rwen = true).generate(),
+    MUL    -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.mul, rwen = true).generate(),
+    MULH   -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.mulh, rwen = true).generate(),
+    MULHSU -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.mulhsu, rwen = true).generate(),
+    MULHU  -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.mulhu, rwen = true).generate(),
+    DIV    -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.div, rwen = true).generate(),
+    DIVU   -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.divu, rwen = true).generate(),
+    REM    -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.rem, rwen = true).generate(),
+    REMU   -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.remu, rwen = true).generate(),
+    MULW   -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.mulw, rwen = true).generate(),
+    DIVW   -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.divw, rwen = true).generate(),
+    DIVUW  -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.divuw, rwen = true).generate(),
+    REMW   -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.remw, rwen = true).generate(),
+    REMUW  -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.mdu, fuOp = MduOp.remuw, rwen = true).generate(),
     FENCE  -> RVDecode().generate(),
     FENCE_I -> RVDecode(flushPipe = true).generate(),
     CBO_INVAL -> RVDecode(src1 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.cboInval).generate(),

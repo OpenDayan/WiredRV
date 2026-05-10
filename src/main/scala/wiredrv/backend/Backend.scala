@@ -23,6 +23,9 @@ class BackendUop(implicit p: CoreParams) extends Bundle {
   val src1 = UInt(p.xlen.W)
   val src2 = UInt(p.xlen.W)
   val store_data = UInt(p.xlen.W)
+  val src1_forward_w = Bool()
+  val src2_forward_w = Bool()
+  val store_forward_w = Bool()
 
   val flushed = Bool()
   val vslot_valid = Bool()
@@ -191,12 +194,14 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_is_cmo = RegInit(false.B)
   val w_victim_tag = RegInit(0.U.asTypeOf(new DCTag))
 
-  val fixed_valid = RegInit(VecInit(Seq.fill(32)(false.B)))
-  val v_valid = RegInit(VecInit(Seq.fill(p.longLatencySlots)(false.B)))
   val v_gpr = RegInit(VecInit(Seq.fill(p.longLatencySlots)(0.U(5.W))))
+  val div_wb_pending_valid = RegInit(false.B)
+  val div_wb_pending = RegInit(0.U.asTypeOf(new MduWriteback))
 
   val vAllocator = Module(new SBAllocator)
   val alu = Module(new ALU)
+  val mulPipe = Module(new MulPipeline)
+  val divUnit = Module(new DivUnit)
   val decoder = Module(new Decode)
 
   val dc_valid = RegInit(0.U.asTypeOf(Vec(p.dcacheWays, Vec(p.dcacheSets, Bool()))))
@@ -291,6 +296,14 @@ class Backend(implicit p: CoreParams) extends Module {
   alu.io.src1 := 0.U
   alu.io.src2 := 0.U
   alu.io.op := AluOp.add
+  mulPipe.io.in.valid := false.B
+  mulPipe.io.in.bits := 0.U.asTypeOf(mulPipe.io.in.bits)
+  divUnit.io.start := false.B
+  divUnit.io.src1 := 0.U
+  divUnit.io.src2 := 0.U
+  divUnit.io.op := MduOp.div
+  divUnit.io.rd := 0.U
+  divUnit.io.vslot := 0.U
 
   for (i <- 0 until p.dcacheWays) {
     dc_tags(i).io.r.req.valid := false.B
@@ -314,10 +327,13 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_rs1 = d_dec.rs1
   val d_rs2 = d_dec.rs2
   val d_rd = d_dec.rd
+  val e_killed_by_w = e_valid && w_redirect.valid
+  val eGpr = Mux(e_valid && !e_uop.flushed && !e_uop.vslot_valid && e_uop.info.rwen && nonZeroReg(e_uop.rd), e_uop.rd, 0.U(5.W))
+  val wGpr = Mux(w_rfen, w_uop.rd, 0.U(5.W))
 
   def rfRead(reg: UInt): UInt = Mux(reg === 0.U, 0.U, rf(reg))
   def dForward(reg: UInt, data: UInt): UInt =
-    Mux(w_rfen && w_uop.rd === reg && nonZeroReg(reg), w_rfdata, data)
+    Mux(wGpr === reg && nonZeroReg(reg), w_rfdata, data)
 
   val d_rs1_rf = rfRead(d_rs1)
   val d_rs2_rf = rfRead(d_rs2)
@@ -339,41 +355,37 @@ class Backend(implicit p: CoreParams) extends Module {
     Mux(d_store_misaligned, 6.U(16.W), d_dec.exceptionCode)
   )
 
-  val e_fixed_valid = e_valid && !e_uop.flushed && e_uop.info.rwen && nonZeroReg(e_uop.rd)
-  val w_fixed_valid = w_valid && !w_uop.flushed && w_uop.info.rwen && nonZeroReg(w_uop.rd)
-
-  def hitFixedE(reg: UInt): Bool = e_fixed_valid && e_uop.rd === reg && nonZeroReg(reg)
-  def hitFixedW(reg: UInt): Bool = w_fixed_valid && w_uop.rd === reg && nonZeroReg(reg)
+  def hitE(reg: UInt): Bool = nonZeroReg(reg) && eGpr === reg
   def hitVar(reg: UInt): Bool =
-    nonZeroReg(reg) && VecInit((0 until p.longLatencySlots).map(i => v_valid(i) && v_gpr(i) === reg)).asUInt.orR
+    nonZeroReg(reg) && VecInit((0 until p.longLatencySlots).map(i => v_gpr(i) === reg)).asUInt.orR
 
   val d_uses_rs1 = d_dec.info.rs1en
   val d_uses_rs2 = d_dec.info.rs2en
   val d_writes_rd = d_dec.info.rwen && nonZeroReg(d_rd)
   val d_is_jal = d_dec.info.fuType === FuType.jmp && d_dec.info.fuOpType === BruOp.jal
   val d_is_jalr = d_dec.info.fuType === FuType.jmp && d_dec.info.fuOpType === BruOp.jalr
-  val d_need_vslot = d_dec.info.isLsu
-  val d_fixed_writes_rd = d_writes_rd && !d_need_vslot
+  val d_is_uncached = d_dec.info.isLsu && inRegions(d_lsu_addr, p.uncachedRegions)
+  val d_is_mext_long_latency = d_dec.info.fuType === FuType.mdu
+  val d_is_div = d_is_mext_long_latency && MduCalc.isDivOp(d_dec.info.fuOpType)
+  val d_need_vslot = (d_is_uncached || d_is_mext_long_latency) && d_writes_rd
+  val e_is_div = e_valid && !e_uop.flushed && e_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(e_uop.info.fuOpType)
+  val w_is_div_pipe = w_valid && !w_uop.flushed && w_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(w_uop.info.fuOpType)
 
   val d_rs1_var_haz = d_uses_rs1 && hitVar(d_rs1)
   val d_rs2_var_haz = d_uses_rs2 && hitVar(d_rs2)
   val d_rd_var_haz = d_writes_rd && hitVar(d_rd)
-  val d_rs1_fixed_haz = d_uses_rs1 && nonZeroReg(d_rs1) && fixed_valid(d_rs1)
-  val d_rs2_fixed_haz = d_uses_rs2 && nonZeroReg(d_rs2) && fixed_valid(d_rs2)
-  val d_rd_fixed_haz = d_fixed_writes_rd && fixed_valid(d_rd)
-  val d_rs1_e_haz = d_uses_rs1 && hitFixedE(d_rs1)
-  val d_rs2_e_haz = d_uses_rs2 && hitFixedE(d_rs2)
-  val d_rs1_w_haz = d_uses_rs1 && hitFixedW(d_rs1)
-  val d_rs2_w_haz = d_uses_rs2 && hitFixedW(d_rs2)
-  val d_jr_not_ready = d_is_jalr && d_uses_rs1 && (hitFixedE(d_rs1) || hitFixedW(d_rs1) || hitVar(d_rs1))
+  val d_rs1_e_haz = d_uses_rs1 && hitE(d_rs1)
+  val d_lsu_base_not_ready = d_dec.info.isLsu && d_rs1_e_haz
+  val d_jr_not_ready = d_is_jalr && d_uses_rs1 && (hitE(d_rs1) || hitVar(d_rs1))
   val d_no_vslot = d_need_vslot && !vAllocator.io.allocate.valid
+  val d_div_resource_busy = d_is_div && d_writes_rd &&
+    (e_is_div || w_is_div_pipe || divUnit.io.busy || div_wb_pending_valid)
   val d_cache_busy = r_state =/= DCacheRefillState.idle
   val d_uncached_busy = false.B
   val d_stall =
     d_rs1_var_haz || d_rs2_var_haz || d_rd_var_haz ||
-      d_rs1_fixed_haz || d_rs2_fixed_haz || d_rd_fixed_haz ||
-      d_rs1_e_haz || d_rs2_e_haz || d_rs1_w_haz || d_rs2_w_haz || d_jr_not_ready ||
-      d_no_vslot || d_cache_busy || d_uncached_busy
+      d_lsu_base_not_ready || d_jr_not_ready ||
+      d_no_vslot || d_div_resource_busy || d_cache_busy || d_uncached_busy
 
   io.inst.ready := !d_stall
   val d_fire = io.inst.valid && io.inst.ready
@@ -394,12 +406,15 @@ class Backend(implicit p: CoreParams) extends Module {
   d_make_uop.src1 := d_src1
   d_make_uop.src2 := d_src2
   d_make_uop.store_data := d_rs2_data
+  d_make_uop.src1_forward_w := d_dec.info.src1Type === SrcType.reg && hitE(d_rs1)
+  d_make_uop.src2_forward_w := d_dec.info.src2Type === SrcType.reg && hitE(d_rs2)
+  d_make_uop.store_forward_w := d_dec.info.rs2en && hitE(d_rs2)
   d_make_uop.flushed := d_flushed
   d_make_uop.vslot_valid := d_need_vslot
   d_make_uop.vslot := d_vslot
 
   val d_jal_target = (d_pc + d_dec.imm)(p.addrBits - 1, 0)
-  val d_jalr_target = ((d_rs1_rf + d_dec.imm) & ~1.U(p.addrBits.W))(p.addrBits - 1, 0)
+  val d_jalr_target = ((d_rs1_data + d_dec.imm) & ~1.U(p.addrBits.W))(p.addrBits - 1, 0)
   d_early_redirect.valid := d_fire && !d_flushed && (d_is_jal || d_is_jalr)
   d_early_redirect.bits := Mux(d_is_jalr, d_jalr_target, d_jal_target)
 
@@ -418,16 +433,15 @@ class Backend(implicit p: CoreParams) extends Module {
   // E stage
   // ============================================================
 
-  val e_killed_by_w = e_valid && w_redirect.valid
   val e_can_side_effect = e_valid && !e_uop.flushed && !e_killed_by_w
-  val e_addr = (e_uop.src1 + e_uop.imm)(p.addrBits - 1, 0)
 
-  def eForward(en: Bool, reg: UInt, data: UInt): UInt =
-    Mux(en && w_rfen && w_uop.rd === reg && nonZeroReg(reg), w_rfdata, data)
+  def eForward(sel: Bool, data: UInt): UInt =
+    Mux(sel && w_rfen, w_rfdata, data)
 
-  val e_src1 = eForward(e_uop.info.src1Type === SrcType.reg, e_uop.rs1, e_uop.src1)
-  val e_src2 = eForward(e_uop.info.src2Type === SrcType.reg, e_uop.rs2, e_uop.src2)
-  val e_store_data = eForward(e_uop.info.rs2en, e_uop.rs2, e_uop.store_data)
+  val e_src1 = eForward(e_uop.src1_forward_w, e_uop.src1)
+  val e_src2 = eForward(e_uop.src2_forward_w, e_uop.src2)
+  val e_store_data = eForward(e_uop.store_forward_w, e_uop.store_data)
+  val e_addr = (e_src1 + e_uop.imm)(p.addrBits - 1, 0)
 
   alu.io.src1 := e_src1
   alu.io.src2 := e_src2
@@ -493,7 +507,9 @@ class Backend(implicit p: CoreParams) extends Module {
     (e_uop.flushed || e_killed_by_w || e_cachable_hit_no_long_latency)
   e_release_slot := e_uop.vslot
 
-  val e_result = Mux(e_uop.info.fuType === FuType.csr, 0.U(p.xlen.W), alu.io.out)
+  val e_result = MuxCase(alu.io.out, Seq(
+    (e_uop.info.fuType === FuType.csr) -> 0.U(p.xlen.W)
+  ))
 
   // ============================================================
   // W stage
@@ -508,12 +524,28 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_store_commit = w_can_commit && w_is_store && w_hit && !w_miss && !w_exception
   val w_start_refill = w_can_commit && w_miss && r_state === DCacheRefillState.idle
   val w_start_cmo = w_can_commit && w_is_cmo && r_state === DCacheRefillState.idle
+  val w_is_mdu = w_uop.info.fuType === FuType.mdu
+  val w_mdu_needs_wb = w_uop.vslot_valid && nonZeroReg(w_uop.rd)
+  val w_mdu_can_start = w_can_commit && w_is_mdu && w_mdu_needs_wb && !w_exception && !w_miss
+  val w_mdu_is_mul = MduCalc.isMulOp(w_uop.info.fuOpType)
+  val w_mdu_is_div = MduCalc.isDivOp(w_uop.info.fuOpType)
   val w_trap_vector = p.resetPc.U(p.addrBits.W)
 
-  // Missed LSU uops replay from W instead of completing through a long writeback.
-  // Release their variable scoreboard token here so the replay can decode again.
-  v_release_vslot := w_start_refill && w_uop.vslot_valid
-  v_release_slot := w_uop.vslot
+  mulPipe.io.in.valid := w_mdu_can_start && w_mdu_is_mul
+  mulPipe.io.in.bits.src1 := w_uop.src1
+  mulPipe.io.in.bits.src2 := w_uop.src2
+  mulPipe.io.in.bits.op := w_uop.info.fuOpType(MduOp.width - 1, 0)
+  mulPipe.io.in.bits.rd := w_uop.rd
+  mulPipe.io.in.bits.vslot := w_uop.vslot
+
+  divUnit.io.start := w_mdu_can_start && w_mdu_is_div && !divUnit.io.busy && !div_wb_pending_valid
+  divUnit.io.src1 := w_uop.src1
+  divUnit.io.src2 := w_uop.src2
+  divUnit.io.op := w_uop.info.fuOpType(MduOp.width - 1, 0)
+  divUnit.io.rd := w_uop.rd
+  divUnit.io.vslot := w_uop.vslot
+  assert(!(w_mdu_can_start && w_mdu_is_div && (divUnit.io.busy || div_wb_pending_valid)),
+    "DivUnit accepted a second request while busy")
 
   w_redirect.valid := w_can_commit && (w_miss || w_is_cmo || w_exception || w_flush_pipe)
   w_redirect.bits := Mux(
@@ -523,7 +555,7 @@ class Backend(implicit p: CoreParams) extends Module {
   )
 
   w_rfdata := Mux(w_is_load, w_load_data, Mux(w_uop.info.fuType === FuType.jmp, w_uop.pc + 4.U, w_result))
-  w_rfen := w_can_commit && !w_exception && w_uop.info.rwen && nonZeroReg(w_uop.rd) && !w_miss
+  w_rfen := w_can_commit && !w_exception && w_uop.info.rwen && nonZeroReg(w_uop.rd) && !w_miss && !w_is_mdu
 
   io.ifencei := w_flush_pipe && w_is_fence_i && !w_miss
 
@@ -542,6 +574,30 @@ class Backend(implicit p: CoreParams) extends Module {
   io.diffCommitIsLoad := w_is_load
   io.diffCommitIsStore := w_is_store
 
+  val service_div_pending = div_wb_pending_valid && !mulPipe.io.out.valid
+  when(service_div_pending) {
+    div_wb_pending_valid := false.B
+  }
+  when(divUnit.io.out.valid && (mulPipe.io.out.valid || div_wb_pending_valid)) {
+    assert(!div_wb_pending_valid, "Div writeback buffer overflow")
+    div_wb_pending_valid := true.B
+    div_wb_pending := divUnit.io.out.bits
+  }
+
+  val long_wb_valid = mulPipe.io.out.valid || div_wb_pending_valid || divUnit.io.out.valid
+  val long_wb_bits = Mux(
+    mulPipe.io.out.valid,
+    mulPipe.io.out.bits,
+    Mux(div_wb_pending_valid, div_wb_pending, divUnit.io.out.bits)
+  )
+  val w_release_vslot = (w_start_refill || (w_can_commit && w_is_mdu && w_exception)) && w_uop.vslot_valid
+
+  v_release_vslot := long_wb_valid || w_release_vslot
+  v_release_slot := Mux(long_wb_valid, long_wb_bits.vslot, w_uop.vslot)
+  v_rfen := long_wb_valid && nonZeroReg(long_wb_bits.rd)
+  v_rf := long_wb_bits.rd
+  v_rfdata := long_wb_bits.data
+
   val diff_rf = Wire(Vec(32, UInt(p.xlen.W)))
   for (i <- 0 until 32) {
     val w_hit_rf = w_rfen && w_uop.rd === i.U
@@ -550,12 +606,14 @@ class Backend(implicit p: CoreParams) extends Module {
   }
   io.diffRf := diff_rf
 
-  when(w_rfen) {
-    rf(w_uop.rd) := w_rfdata
-  }
   when(v_rfen && nonZeroReg(v_rf)) {
     rf(v_rf) := v_rfdata
   }
+  when(w_rfen) {
+    rf(w_uop.rd) := w_rfdata
+  }
+  assert(!(w_rfen && v_rfen && w_uop.rd === v_rf),
+    "Normal W writeback and long writeback target the same GPR")
   rf(0) := 0.U
 
   // ============================================================
@@ -796,30 +854,22 @@ class Backend(implicit p: CoreParams) extends Module {
     vAllocator.io.release(0).bits === vAllocator.io.release(1).bits))
 
   when(vAllocator.io.release(0).fire) {
-    v_valid(vAllocator.io.release(0).bits) := false.B
+    v_gpr(vAllocator.io.release(0).bits) := 0.U
   }
   when(vAllocator.io.release(1).fire) {
-    v_valid(vAllocator.io.release(1).bits) := false.B
+    v_gpr(vAllocator.io.release(1).bits) := 0.U
   }
-  when(d_fire && d_need_vslot && d_dec.info.rwen && nonZeroReg(d_rd)) {
-    v_valid(d_vslot) := true.B
-    v_gpr(d_vslot) := d_rd
+  when(d_fire && d_need_vslot) {
+    v_gpr(d_vslot) := Mux(d_dec.info.rwen && nonZeroReg(d_rd), d_rd, 0.U)
   }
-  for (i <- 1 until 32) {
-    when(w_rfen && w_uop.rd === i.U) {
-      fixed_valid(i) := false.B
-    }
-    when(e_killed_by_w && e_uop.info.rwen && !e_uop.info.isLsu && e_uop.rd === i.U) {
-      fixed_valid(i) := false.B
-    }
-    when(d_fire && !d_flushed && d_fixed_writes_rd && d_rd === i.U) {
-      fixed_valid(i) := true.B
-    }
-  }
-  fixed_valid(0) := false.B
+
+  val e_uop_to_w = WireDefault(e_uop)
+  e_uop_to_w.src1 := e_src1
+  e_uop_to_w.src2 := e_src2
+  e_uop_to_w.store_data := e_store_data
 
   w_valid := e_valid && !e_uop.flushed && !w_redirect.valid
-  w_uop := e_uop
+  w_uop := e_uop_to_w
   w_result := e_result
   w_load_data := e_load_data
   w_store_entry := e_store_entry
