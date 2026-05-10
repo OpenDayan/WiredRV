@@ -96,6 +96,8 @@ class AxiNarrowToWide(narrow: AxiParams, wide: AxiParams, buffer: Int = 0) exten
 
   private val ratio = wide.dataBits / narrow.dataBits
   private val ratioBits = log2Ceil(ratio)
+  private val narrowBytes = narrow.dataBits / 8
+  private val narrowBeatBits = log2Ceil(narrowBytes)
   private val wideBytes = wide.dataBits / 8
   private val wideBeatBits = log2Ceil(wideBytes)
 
@@ -143,15 +145,52 @@ class AxiNarrowToWide(narrow: AxiParams, wide: AxiParams, buffer: Int = 0) exten
     rData((i + 1) * narrow.dataBits - 1, i * narrow.dataBits)
   })(slice)
 
-  io.mst.aw.ready := false.B
-  io.mst.w.ready := false.B
-  io.mst.b.valid := false.B
+  val wIdle :: wSend :: wResp :: Nil = Enum(3)
+  val wState = RegInit(wIdle)
+  val wAw = Reg(new AWFlit(narrow))
+  val wData = Reg(new WFlit(narrow))
+  val wAwValid = RegInit(false.B)
+  val wDataValid = RegInit(false.B)
+  val wAwSent = RegInit(false.B)
+  val wDataSent = RegInit(false.B)
+
+  val wInputAwValid = wAwValid || io.mst.aw.fire
+  val wInputDataValid = wDataValid || io.mst.w.fire
+  val wInputAw = Mux(wAwValid, wAw, io.mst.aw.bits)
+  val wInputData = Mux(wDataValid, wData, io.mst.w.bits)
+  val wSlice = wAw.addr(wideBeatBits - 1, narrowBeatBits)
+  val wShiftBits = wSlice << log2Ceil(narrow.dataBits).U
+  val wShiftBytes = wSlice << narrowBeatBits.U
+
+  io.mst.aw.ready := wState === wIdle && !wAwValid
+  io.mst.w.ready := wState === wIdle && !wDataValid
+  io.mst.b.valid := wState === wResp && io.slv.b.valid
   io.mst.b.bits := 0.U.asTypeOf(new BFlit(narrow))
-  io.slv.aw.valid := false.B
+  io.mst.b.bits.id := io.slv.b.bits.id
+  io.mst.b.bits.resp := io.slv.b.bits.resp
+  io.mst.b.bits.user := io.slv.b.bits.user
+
+  io.slv.aw.valid := wState === wSend && !wAwSent
   io.slv.aw.bits := 0.U.asTypeOf(new AWFlit(wide))
-  io.slv.w.valid := false.B
+  io.slv.aw.bits.id := wAw.id
+  io.slv.aw.bits.addr := Cat(wAw.addr(wide.addrBits - 1, wideBeatBits), 0.U(wideBeatBits.W))
+  io.slv.aw.bits.len := 0.U
+  io.slv.aw.bits.size := log2Ceil(wideBytes).U
+  io.slv.aw.bits.burst := AxiComputeFunction.INCR
+  io.slv.aw.bits.lock := wAw.lock
+  io.slv.aw.bits.cache := wAw.cache
+  io.slv.aw.bits.prot := wAw.prot
+  io.slv.aw.bits.qos := wAw.qos
+  io.slv.aw.bits.region := wAw.region
+  io.slv.aw.bits.user := wAw.user
+
+  io.slv.w.valid := wState === wSend && !wDataSent
   io.slv.w.bits := 0.U.asTypeOf(new WFlit(wide))
-  io.slv.b.ready := true.B
+  io.slv.w.bits.data := wData.data << wShiftBits
+  io.slv.w.bits.strb := wData.strb << wShiftBytes
+  io.slv.w.bits.last := 1.U
+  io.slv.w.bits.user := wData.user
+  io.slv.b.ready := wState === wResp && io.mst.b.ready
 
   when(io.mst.ar.fire) {
     state := sRead
@@ -176,5 +215,35 @@ class AxiNarrowToWide(narrow: AxiParams, wide: AxiParams, buffer: Int = 0) exten
     }.otherwise {
       slice := slice + 1.U
     }
+  }
+
+  when(io.mst.aw.fire) {
+    wAwValid := true.B
+    wAw := io.mst.aw.bits
+  }
+  when(io.mst.w.fire) {
+    wDataValid := true.B
+    wData := io.mst.w.bits
+  }
+  when(wState === wIdle && wInputAwValid && wInputDataValid) {
+    wAw := wInputAw
+    wData := wInputData
+    wAwValid := false.B
+    wDataValid := false.B
+    wAwSent := false.B
+    wDataSent := false.B
+    wState := wSend
+  }
+  when(io.slv.aw.fire) {
+    wAwSent := true.B
+  }
+  when(io.slv.w.fire) {
+    wDataSent := true.B
+  }
+  when(wState === wSend && (wAwSent || io.slv.aw.fire) && (wDataSent || io.slv.w.fire)) {
+    wState := wResp
+  }
+  when(io.slv.b.fire) {
+    wState := wIdle
   }
 }

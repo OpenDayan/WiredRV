@@ -136,6 +136,7 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   val d2 = DifftestModule(new DiffCSRState, delay = 1, dontCare = true)
   val d3 = DifftestModule(new DiffInstrCommit, delay = 1, dontCare = true)
   val d4 = DifftestModule(new DiffTrapEvent, delay = 1, dontCare = true)
+  val d5 = DifftestModule(new DiffArchIntDelayedUpdate, delay = 1, dontCare = true)
 
   val core = Module(new WiredCore)
   val mem = Module(new AxiDiffMem(AxiSlvParamsCalc(Seq(
@@ -213,7 +214,7 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   d3.isLoad := core.io.diffCommitIsLoad
   d3.isStore := core.io.diffCommitIsStore
   d3.nFused := 0.U
-  d3.setSpecial(isExit = simExit)
+  d3.setSpecial(isDelayedWb = core.io.diffCommitIsDelayedWb, isExit = simExit)
 
   d4.coreid := 0.U
   d4.hasTrap := simExit
@@ -222,6 +223,13 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   d4.hasWFI := false.B
   d4.code := core.io.diffRf(10)
   d4.pc := core.io.diffCommitPc
+
+  d5.coreid := 0.U
+  d5.index := 0.U
+  d5.valid := core.io.diffDelayedWbValid
+  d5.address := core.io.diffDelayedWbRd
+  d5.data := core.io.diffDelayedWbData
+  d5.nack := false.B
 
   io.pc := core.io.inst.bits.pc
   io.inst.valid := core.io.inst.fire

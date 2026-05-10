@@ -20,6 +20,10 @@ class WiredCoreIO(implicit p: CoreParams) extends Bundle {
   val diffCommitRd = Output(UInt(5.W))
   val diffCommitIsLoad = Output(Bool())
   val diffCommitIsStore = Output(Bool())
+  val diffCommitIsDelayedWb = Output(Bool())
+  val diffDelayedWbValid = Output(Bool())
+  val diffDelayedWbRd = Output(UInt(5.W))
+  val diffDelayedWbData = Output(UInt(p.xlen.W))
   val diffRf = Output(Vec(32, UInt(p.xlen.W)))
 }
 
@@ -50,6 +54,10 @@ class WiredCore(implicit p: CoreParams) extends Module {
   io.diffCommitRd := backend.io.diffCommitRd
   io.diffCommitIsLoad := backend.io.diffCommitIsLoad
   io.diffCommitIsStore := backend.io.diffCommitIsStore
+  io.diffCommitIsDelayedWb := backend.io.diffCommitIsDelayedWb
+  io.diffDelayedWbValid := backend.io.diffDelayedWbValid
+  io.diffDelayedWbRd := backend.io.diffDelayedWbRd
+  io.diffDelayedWbData := backend.io.diffDelayedWbData
   io.diffRf := backend.io.diffRf
 
   imemToAxi.io.in <> frontend.io.bus

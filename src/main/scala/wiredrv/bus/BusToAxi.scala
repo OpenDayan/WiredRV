@@ -72,7 +72,7 @@ class BusToAxi(width: Int)(implicit p: CoreParams) extends Module {
   io.out.ar.bits.id := io.in.a.bits.id
   io.out.ar.bits.addr := io.in.a.bits.address
   io.out.ar.bits.len := (txnBeats(io.in.a.bits.size) - 1.U)(axiP.lenBits - 1, 0)
-  io.out.ar.bits.size := beatLg.U
+  io.out.ar.bits.size := Mux(io.in.a.bits.size <= beatLg.U, io.in.a.bits.size, beatLg.U)
   io.out.ar.bits.burst := AxiComputeFunction.INCR
   io.out.ar.bits.lock := 0.U
   io.out.ar.bits.cache := 0.U
