@@ -71,8 +71,11 @@ class Frontend(implicit p: CoreParams) extends Module {
   npc.pc.ready := !frontStall
   val pc = npc.pc.bits
 
-  val f1Valid = RegInit(0.B)
-  val f1pc = RegEnable(pc, !frontStall)
+  val f0ReadFire = Wire(Bool())
+  val f1RespValid = RegNext(f0ReadFire, false.B)
+  val f1pc = RegEnable(pc, f0ReadFire)
+  val f1Set = RegEnable(p.icacheGetSet(pc), f0ReadFire)
+  val f1Tag = RegEnable(p.icacheGetTag(pc), f0ReadFire)
 
   class ICTag extends Bundle {
     val tag = UInt(p.icacheTagBits.W)
@@ -83,8 +86,12 @@ class Frontend(implicit p: CoreParams) extends Module {
   val icValid = RegInit(0.U.asTypeOf(Vec(p.icacheWays, Vec(p.icacheSets, Bool()))))
   val icTags = Seq.fill(p.icacheWays)(Module(new SRAMTemplate(new ICTag, p.icacheSets, singlePort = true)))
   val icDatas = Seq.fill(p.icacheWays)(Module(new SRAMTemplate(UInt(p.xlen.W), p.icacheSets * beatsPerLine, singlePort = true)))
-  val f1Hit = WireDefault(false.B)
-  val f1Inst = WireDefault(0.U(32.W))
+  val f1BufValid = RegInit(false.B)
+  val f1BufPc = Reg(UInt(p.addrBits.W))
+  val f1BufSet = Reg(UInt(p.icacheSetBits.W))
+  val f1BufTag = Reg(UInt(p.icacheTagBits.W))
+  val f1BufHit = Reg(Bool())
+  val f1BufInst = Reg(UInt(32.W))
 
   val replWay = RegInit(VecInit(Seq.fill(p.icacheSets)(false.B)))
   private val bhtEntries = 1024
@@ -117,7 +124,7 @@ class Frontend(implicit p: CoreParams) extends Module {
   val f2RefillEnd = rDLast && io.bus.d.fire
 
   icTags.zipWithIndex.foreach { case (icTag, idx) =>
-    icTag.io.r.req.valid := !f2Refill && !frontStall
+    icTag.io.r.req.valid := f0ReadFire
     icTag.io.r.req.bits.apply(readTagSet)
     icTag.io.w.req.valid := f2RefillEnd && (rSelWay === idx.U)
     icTag.io.w.req.bits.apply(WireInit({
@@ -128,59 +135,64 @@ class Frontend(implicit p: CoreParams) extends Module {
   }
 
   icDatas.zipWithIndex.foreach { case (icData, idx) =>
-    icData.io.r.req.valid := !f2Refill && !frontStall
+    icData.io.r.req.valid := f0ReadFire
     icData.io.r.req.bits.apply(readDataIdx)
     icData.io.w.req.valid := io.bus.d.fire && (rSelWay === idx.U)
     icData.io.w.req.bits.apply(io.bus.d.bits.data, writeDataIdx, 1.U)
   }
 
-  when(!f2Refill) {
-    val hits = icValid.zip(icTags).map { case (v, t) =>
-      val set = p.icacheGetSet(pc)
-      RegEnable(!(io.ifencei) && v(set), !frontStall) && t.io.r.resp.data(0).tag === p.icacheGetTag(f1pc)
-    }
-    val insts = VecInit(icDatas.map(_.io.r.resp.data(0)))
-    f1Hit := VecInit(hits).asUInt.orR
-    f1Inst := Mux(hits(0), insts(0), insts(1))
-    f1Valid := true.B
-  }.otherwise {
-    f1Valid := false.B
+  val rawHits = icValid.zip(icTags).map { case (v, t) =>
+    RegEnable(!(io.ifencei) && v(p.icacheGetSet(pc)), f0ReadFire) &&
+      t.io.r.resp.data(0).tag === f1Tag
   }
+  val insts = VecInit(icDatas.map(_.io.r.resp.data(0)))
+  val rawHit = VecInit(rawHits).asUInt.orR
+  val rawInst = Mux(rawHits(0), insts(0), insts(1))(31, 0)
 
   val f2Hold = f2Valid && !io.inst.ready && !backRedir
+  val f1Valid = f1BufValid || f1RespValid
+  val f1Hit = Mux(f1BufValid, f1BufHit, rawHit)
+  val f1Inst = Mux(f1BufValid, f1BufInst, rawInst)
+  val f1CurPc = Mux(f1BufValid, f1BufPc, f1pc)
+  val f1CurSet = Mux(f1BufValid, f1BufSet, f1Set)
+  val f1CurTag = Mux(f1BufValid, f1BufTag, f1Tag)
   val f2RefillStart = !frontStall && f1Valid && !anyFlushRedir && !f1Hit
   val f2HitAccept = !frontStall && f1Valid && !anyFlushRedir && f1Hit
   val f1IsJal = f1Inst(6, 0) === "b1101111".U
   val f1JalImm = Cat(Fill(p.addrBits - 21, f1Inst(31)), f1Inst(31), f1Inst(19, 12), f1Inst(20), f1Inst(30, 21), 0.U(1.W))
-  val f1JalTarget = (f1pc + f1JalImm)(p.addrBits - 1, 0)
+  val f1JalTarget = (f1CurPc + f1JalImm)(p.addrBits - 1, 0)
   val f1IsBranch = f1Inst(6, 0) === "b1100011".U
   val f1BranchImm = Cat(Fill(p.addrBits - 13, f1Inst(31)), f1Inst(31), f1Inst(7), f1Inst(30, 25), f1Inst(11, 8), 0.U(1.W))
-  val f1BranchTarget = (f1pc + f1BranchImm)(p.addrBits - 1, 0)
-  val f1BhtIdx = bhtIndex(f1pc)
+  val f1BranchTarget = (f1CurPc + f1BranchImm)(p.addrBits - 1, 0)
+  val f1BhtIdx = bhtIndex(f1CurPc)
   val f1BranchTakenPred = Mux(bhtValid(f1BhtIdx), bhtCtr(f1BhtIdx)(1), f1Inst(31))
   val f1PredictJal = f2HitAccept && f1IsJal
   val f1PredictBranch = f2HitAccept && f1IsBranch && f1BranchTakenPred
   val f1PredictJump = f1PredictJal || f1PredictBranch
   val f1PredictTarget = Mux(f1PredictJal, f1JalTarget, f1BranchTarget)
-  val missSetValidVec = VecInit(icValid.map(_(p.icacheGetSet(f1pc))))
+  val missSetValidVec = VecInit(icValid.map(_(f1CurSet)))
   val missSetHasValid = missSetValidVec.asUInt.orR
   val missSetFull = missSetValidVec.asUInt.andR
   frontStall := f2Hold || f2Refill
+  f0ReadFire := !frontStall && !f2Refill && !f2RefillStart
   frontPredRedirect.valid := f1PredictJump
   frontPredRedirect.bits := f1PredictTarget
 
   when(!frontStall) {
     f2Valid := f1Valid && !anyFlushRedir && f1Hit
+    when(f1BufValid) {
+      f1BufValid := false.B
+    }
     when(f2RefillStart) {
       f2Refill := true.B
-      val missSet = p.icacheGetSet(f1pc)
+      val missSet = f1CurSet
       rSelWay := replWay(missSet).asUInt
       replWay(missSet) := !replWay(missSet)
       rAValid := true.B
       rRValid := true.B
       rDCnt := 0.U
     }
-    f2Inst.pc := f1pc
+    f2Inst.pc := f1CurPc
     f2Inst.inst := f1Inst
     f2Inst.jump := f1PredictJump
     f2Inst.target := f1PredictTarget
@@ -192,6 +204,14 @@ class Frontend(implicit p: CoreParams) extends Module {
     io.inst.bits := f2Inst
   }.otherwise {
     f2SkidV := false.B
+    when(f1RespValid && !f1BufValid) {
+      f1BufValid := true.B
+      f1BufPc := f1pc
+      f1BufSet := f1Set
+      f1BufTag := f1Tag
+      f1BufHit := rawHit
+      f1BufInst := rawInst
+    }
     when(backRedir) {
       f2Valid := false.B
     }

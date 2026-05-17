@@ -239,6 +239,9 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val e_valid = RegInit(false.B)
   val e_uop = RegInit(0.U.asTypeOf(new BackendUop))
+  val e_lsu_base_early_valid = RegInit(false.B)
+  val e_lsu_base_early_rd = RegInit(0.U(5.W))
+  val e_lsu_base_early_data = RegInit(0.U(p.xlen.W))
   val w_valid = RegInit(false.B)
   val w_uop = RegInit(0.U.asTypeOf(new BackendUop))
 
@@ -430,6 +433,10 @@ class Backend(implicit p: CoreParams) extends Module {
   val eGpr = Mux(e_valid && !e_uop.flushed && !e_uop.vslot_valid && e_uop.info.rwen && nonZeroReg(e_uop.rd), e_uop.rd, 0.U(5.W))
   val wGpr = Mux(w_rfen, w_uop.rd, 0.U(5.W))
 
+  def hitE(reg: UInt): Bool = nonZeroReg(reg) && eGpr === reg
+  def hitVar(reg: UInt): Bool =
+    nonZeroReg(reg) && VecInit((0 until p.longLatencySlots).map(i => v_gpr(i) === reg)).asUInt.orR
+
   def rfRead(reg: UInt): UInt = Mux(reg === 0.U, 0.U, rf(reg))
   def dForward(reg: UInt, data: UInt): UInt =
     Mux(wGpr === reg && nonZeroReg(reg), w_rfdata, data)
@@ -452,14 +459,19 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val d_src1 = selectSrc(d_dec.info.src1Type, d_rs1_data, d_pc, d_dec.imm)
   val d_src2 = selectSrc(d_dec.info.src2Type, d_rs2_data, d_pc, d_dec.imm)
-  val e_can_forward_lsu_base =
-    e_valid && !e_uop.flushed && !e_uop.vslot_valid &&
-      e_uop.info.rwen && nonZeroReg(e_uop.rd) &&
-      (e_uop.info.fuType === FuType.alu || e_uop.info.fuType === FuType.csr)
-  val e_lsu_base_forward_data = Mux(e_uop.info.fuType === FuType.csr, csrRead(e_uop.csrAddr, cycleCnt), alu.io.out)
+  val d_src1_waits_e = d_dec.info.src1Type === SrcType.reg && hitE(d_rs1)
+  val d_src2_waits_e = d_dec.info.src2Type === SrcType.reg && hitE(d_rs2)
+  val d_add_result_ready =
+    d_dec.info.fuType === FuType.alu &&
+      d_dec.info.fuOpType === AluOp.add &&
+      d_dec.exceptionCode === 0.U && !d_dec.info.illegal &&
+      d_dec.info.rwen && nonZeroReg(d_rd) &&
+      !d_src1_waits_e && !d_src2_waits_e
+  val d_add_early_result = (d_src1 + d_src2)(p.xlen - 1, 0)
   val d_lsu_base_e_forward = d_dec.info.isLsu && d_dec.info.rs1en &&
-    e_can_forward_lsu_base && e_uop.rd === d_rs1
-  val d_lsu_base_data = Mux(d_lsu_base_e_forward, e_lsu_base_forward_data, d_rs1_data)
+    e_valid && !e_uop.flushed && !e_killed_by_w &&
+    e_lsu_base_early_valid && e_lsu_base_early_rd === d_rs1
+  val d_lsu_base_data = Mux(d_lsu_base_e_forward, e_lsu_base_early_data, d_rs1_data)
   val d_lsu_addr = (d_lsu_base_data + d_dec.imm)(p.addrBits - 1, 0)
   val d_is_cmo = d_dec.info.isLsu && isCmoOp(d_dec.info.fuOpType)
   val d_is_load = d_dec.info.isLsu && !d_dec.info.isStore && !d_is_cmo
@@ -472,10 +484,6 @@ class Backend(implicit p: CoreParams) extends Module {
     4.U(16.W),
     Mux(d_store_misaligned, 6.U(16.W), d_dec.exceptionCode)
   )
-
-  def hitE(reg: UInt): Bool = nonZeroReg(reg) && eGpr === reg
-  def hitVar(reg: UInt): Bool =
-    nonZeroReg(reg) && VecInit((0 until p.longLatencySlots).map(i => v_gpr(i) === reg)).asUInt.orR
 
   val d_uses_rs1 = d_dec.info.rs1en
   val d_uses_rs2 = d_dec.info.rs2en
@@ -1164,8 +1172,12 @@ class Backend(implicit p: CoreParams) extends Module {
   when(d_fire) {
     e_valid := true.B
     e_uop := d_make_uop
+    e_lsu_base_early_valid := d_add_result_ready && !d_flushed
+    e_lsu_base_early_rd := d_rd
+    e_lsu_base_early_data := d_add_early_result
   }.otherwise {
     e_valid := false.B
     e_uop := 0.U.asTypeOf(new BackendUop)
+    e_lsu_base_early_valid := false.B
   }
 }

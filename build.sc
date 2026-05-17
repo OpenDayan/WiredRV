@@ -26,12 +26,13 @@ trait Chisel66Module extends ScalaModule with Cross.Module[String] {
 
   def chiselVersion: String = crossValue
   def scalaVersion = v.scalaVersion
-  def chiselIvy = Some(v.chiselIvy)
-  def chiselPluginIvy = Some(v.chiselPluginIvy)
+  def chiselIvy = v.chiselIvy
+  def chiselPluginIvy = v.chiselPluginIvy
   def millForkArgs = Seq(
     s"-Xmx${sys.env.getOrElse("MILL_FORK_XMX", "256G")}",
     s"-Xss${sys.env.getOrElse("MILL_FORK_XSS", "192m")}"
   )
+  override def forkEnv = super.forkEnv() ++ Map("NOOP_HOME" -> os.pwd.toString)
 
   override def ivyDeps = super.ivyDeps() ++ Agg(v.sourcecodeIvy)
 
