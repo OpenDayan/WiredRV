@@ -5,12 +5,14 @@ import chisel3.util._
 import wiredrv.CoreParams
 import wiredrv.bus._
 import wiredrv.bus.BusOp.{ReadOnly, StoreOnly}
-import wiredrv.frontend.FetchPacket
+import wiredrv.frontend.{BranchUpdate, FetchPacket}
 import xs.utils.sram.SRAMTemplate
 
 class BackendUop(implicit p: CoreParams) extends Bundle {
   val pc = UInt(p.addrBits.W)
   val inst = UInt(32.W)
+  val predictedJump = Bool()
+  val predictedTarget = UInt(p.addrBits.W)
   val info = new DecodeInfo
 
   val rs1 = UInt(5.W)
@@ -47,6 +49,26 @@ class StoreQueueEntry(implicit p: CoreParams) extends Bundle {
   val set = UInt(p.dcacheSetBits.W)
 }
 
+class BackendPerfCounters extends Bundle {
+  val cycles = UInt(64.W)
+  val commits = UInt(64.W)
+  val dStall = UInt(64.W)
+  val dRs1VarHaz = UInt(64.W)
+  val dRs2VarHaz = UInt(64.W)
+  val dRdVarHaz = UInt(64.W)
+  val dLsuBaseNotReady = UInt(64.W)
+  val dJrNotReady = UInt(64.W)
+  val dNoVslot = UInt(64.W)
+  val dDivResourceBusy = UInt(64.W)
+  val dCacheBusy = UInt(64.W)
+  val dUncachedBusy = UInt(64.W)
+  val branchRedirect = UInt(64.W)
+  val dcacheMiss = UInt(64.W)
+  val uncachedAccess = UInt(64.W)
+  val mulStart = UInt(64.W)
+  val divStart = UInt(64.W)
+}
+
 object DCacheRefillState {
   val idle :: sendA :: recvD :: writeMeta :: cmoRead :: cmoWriteback :: cmoUpdate :: Nil = Enum(7)
 }
@@ -63,6 +85,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val io = IO(new Bundle {
     val inst = Flipped(Decoupled(new FetchPacket))
     val redirects = Output(Vec(3, Valid(UInt(p.addrBits.W))))
+    val branchUpdate = Output(Valid(new BranchUpdate))
     val ifencei = Output(Bool())
     val bus = new BusBundle(p.innerBusWidth)
 
@@ -79,6 +102,8 @@ class Backend(implicit p: CoreParams) extends Module {
     val diffDelayedWbRd = Output(UInt(5.W))
     val diffDelayedWbData = Output(UInt(p.xlen.W))
     val diffRf = Output(Vec(32, UInt(p.xlen.W)))
+    val simUart = Valid(UInt(8.W))
+    val perf = Output(new BackendPerfCounters)
   })
 
   private val bytesPerWord = p.xlen / 8
@@ -173,6 +198,12 @@ class Backend(implicit p: CoreParams) extends Module {
   private def storeData(data: UInt, addr: UInt): UInt =
     data << (addr(wordOffsetBits - 1, 0) << 3)
 
+  private def csrRead(addr: UInt, cycle: UInt): UInt =
+    MuxLookup(addr, 0.U(p.xlen.W))(Seq(
+      "hb00".U(12.W) -> cycle, // mcycle
+      "hb80".U(12.W) -> Cat(0.U(32.W), cycle(63, 32)) // mcycleh, useful for RV32-style code
+    ))
+
   private def mergeByMask(base: UInt, data: UInt, mask: UInt): UInt = {
     val bitMask = byteMask(mask)
     (base & ~bitMask) | (data & bitMask)
@@ -201,6 +232,10 @@ class Backend(implicit p: CoreParams) extends Module {
   // ============================================================
 
   val rf = RegInit(VecInit(Seq.fill(32)(0.U(p.xlen.W))))
+  val cycleCnt = RegInit(0.U(p.xlen.W))
+  val perf = RegInit(0.U.asTypeOf(new BackendPerfCounters))
+  cycleCnt := cycleCnt + 1.U
+  io.perf := perf
 
   val e_valid = RegInit(false.B)
   val e_uop = RegInit(0.U.asTypeOf(new BackendUop))
@@ -270,6 +305,8 @@ class Backend(implicit p: CoreParams) extends Module {
   val u_mask = RegInit(0.U(bytesPerWord.W))
   val u_data = RegInit(0.U(p.xlen.W))
   val u_load_word = RegInit(0.U(p.xlen.W))
+  val simUartValid = RegInit(false.B)
+  val simUartBits = Reg(UInt(8.W))
 
   val w_redirect = Wire(Valid(UInt(p.addrBits.W)))
   val e_redirect = Wire(Valid(UInt(p.addrBits.W)))
@@ -315,6 +352,8 @@ class Backend(implicit p: CoreParams) extends Module {
   io.redirects(0) := w_redirect
   io.redirects(1) := e_redirect
   io.redirects(2) := d_early_redirect
+  io.branchUpdate.valid := false.B
+  io.branchUpdate.bits := 0.U.asTypeOf(new BranchUpdate)
   io.ifencei := false.B
 
   io.bus.a.valid := false.B
@@ -335,6 +374,9 @@ class Backend(implicit p: CoreParams) extends Module {
   io.diffDelayedWbRd := 0.U
   io.diffDelayedWbData := 0.U
   io.diffRf := 0.U.asTypeOf(Vec(32, UInt(p.xlen.W)))
+  simUartValid := false.B
+  io.simUart.valid := simUartValid
+  io.simUart.bits := simUartBits
 
   vAllocator.io.allocate.ready := false.B
   val release0_normal_valid = e_release_vslot || u_release_vslot
@@ -397,9 +439,28 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_rs1_data = dForward(d_rs1, d_rs1_rf)
   val d_rs2_data = dForward(d_rs2, d_rs2_rf)
 
+  def eForward(sel: Bool, data: UInt): UInt =
+    Mux(sel && w_rfen, w_rfdata, data)
+
+  val e_src1 = eForward(e_uop.src1_forward_w, e_uop.src1)
+  val e_src2 = eForward(e_uop.src2_forward_w, e_uop.src2)
+  val e_store_data = eForward(e_uop.store_forward_w, e_uop.store_data)
+
+  alu.io.src1 := e_src1
+  alu.io.src2 := e_src2
+  alu.io.op := e_uop.info.fuOpType(AluOp.width - 1, 0)
+
   val d_src1 = selectSrc(d_dec.info.src1Type, d_rs1_data, d_pc, d_dec.imm)
   val d_src2 = selectSrc(d_dec.info.src2Type, d_rs2_data, d_pc, d_dec.imm)
-  val d_lsu_addr = (d_rs1_data + d_dec.imm)(p.addrBits - 1, 0)
+  val e_can_forward_lsu_base =
+    e_valid && !e_uop.flushed && !e_uop.vslot_valid &&
+      e_uop.info.rwen && nonZeroReg(e_uop.rd) &&
+      (e_uop.info.fuType === FuType.alu || e_uop.info.fuType === FuType.csr)
+  val e_lsu_base_forward_data = Mux(e_uop.info.fuType === FuType.csr, csrRead(e_uop.csrAddr, cycleCnt), alu.io.out)
+  val d_lsu_base_e_forward = d_dec.info.isLsu && d_dec.info.rs1en &&
+    e_can_forward_lsu_base && e_uop.rd === d_rs1
+  val d_lsu_base_data = Mux(d_lsu_base_e_forward, e_lsu_base_forward_data, d_rs1_data)
+  val d_lsu_addr = (d_lsu_base_data + d_dec.imm)(p.addrBits - 1, 0)
   val d_is_cmo = d_dec.info.isLsu && isCmoOp(d_dec.info.fuOpType)
   val d_is_load = d_dec.info.isLsu && !d_dec.info.isStore && !d_is_cmo
   val d_is_store = d_dec.info.isStore
@@ -432,7 +493,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_rs2_var_haz = d_uses_rs2 && hitVar(d_rs2)
   val d_rd_var_haz = d_writes_rd && hitVar(d_rd)
   val d_rs1_e_haz = d_uses_rs1 && hitE(d_rs1)
-  val d_lsu_base_not_ready = d_dec.info.isLsu && d_rs1_e_haz
+  val d_lsu_base_not_ready = d_dec.info.isLsu && d_rs1_e_haz && !d_lsu_base_e_forward
   val d_jr_not_ready = d_is_jalr && d_uses_rs1 && (hitE(d_rs1) || hitVar(d_rs1))
   val d_no_vslot = d_need_vslot && !vAllocator.io.allocate.valid
   val d_div_resource_busy = d_is_div && d_writes_rd &&
@@ -453,6 +514,8 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_make_uop = Wire(new BackendUop)
   d_make_uop.pc := d_pc
   d_make_uop.inst := d_inst
+  d_make_uop.predictedJump := io.inst.bits.jump
+  d_make_uop.predictedTarget := io.inst.bits.target
   d_make_uop.info := d_dec.info
   d_make_uop.rs1 := d_rs1
   d_make_uop.rs2 := d_rs2
@@ -472,7 +535,8 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val d_jal_target = (d_pc + d_dec.imm)(p.addrBits - 1, 0)
   val d_jalr_target = ((d_rs1_data + d_dec.imm) & ~1.U(p.addrBits.W))(p.addrBits - 1, 0)
-  d_early_redirect.valid := d_fire && !d_flushed && (d_is_jal || d_is_jalr)
+  val d_jal_predicted = io.inst.bits.jump && io.inst.bits.target === d_jal_target
+  d_early_redirect.valid := d_fire && !d_flushed && ((d_is_jal && !d_jal_predicted) || d_is_jalr)
   d_early_redirect.bits := Mux(d_is_jalr, d_jalr_target, d_jal_target)
 
   val d_dcache_set = p.dcacheGetSet(d_lsu_addr)
@@ -493,17 +557,7 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val e_can_side_effect = e_valid && !e_uop.flushed && !e_killed_by_w
 
-  def eForward(sel: Bool, data: UInt): UInt =
-    Mux(sel && w_rfen, w_rfdata, data)
-
-  val e_src1 = eForward(e_uop.src1_forward_w, e_uop.src1)
-  val e_src2 = eForward(e_uop.src2_forward_w, e_uop.src2)
-  val e_store_data = eForward(e_uop.store_forward_w, e_uop.store_data)
   val e_addr = (e_src1 + e_uop.imm)(p.addrBits - 1, 0)
-
-  alu.io.src1 := e_src1
-  alu.io.src2 := e_src2
-  alu.io.op := e_uop.info.fuOpType(AluOp.width - 1, 0)
 
   val e_eq = e_src1 === e_src2
   val e_lt = e_src1.asSInt < e_src2.asSInt
@@ -516,8 +570,15 @@ class Backend(implicit p: CoreParams) extends Module {
     BruOp.bltu -> e_ltu,
     BruOp.bgeu -> !e_ltu
   ))
-  e_redirect.valid := e_can_side_effect && e_uop.info.fuType === FuType.bru && e_branch_taken
-  e_redirect.bits := (e_uop.pc + e_uop.imm)(p.addrBits - 1, 0)
+  val e_branch_target = (e_uop.pc + e_uop.imm)(p.addrBits - 1, 0)
+  val e_branch_fallthrough = (e_uop.pc + 4.U)(p.addrBits - 1, 0)
+  val e_branch_actual_target = Mux(e_branch_taken, e_branch_target, e_branch_fallthrough)
+  val e_branch_predicted = e_uop.predictedJump && e_uop.predictedTarget === e_branch_actual_target
+  e_redirect.valid := e_can_side_effect && e_uop.info.fuType === FuType.bru && !e_branch_predicted && (e_branch_taken || e_uop.predictedJump)
+  e_redirect.bits := e_branch_actual_target
+  io.branchUpdate.valid := e_can_side_effect && e_uop.info.fuType === FuType.bru
+  io.branchUpdate.bits.pc := e_uop.pc
+  io.branchUpdate.bits.taken := e_branch_taken
 
   val e_set = p.dcacheGetSet(e_addr)
   val e_tag = p.dcacheGetTag(e_addr)
@@ -567,7 +628,7 @@ class Backend(implicit p: CoreParams) extends Module {
   e_release_slot := e_uop.vslot
 
   val e_result = MuxCase(alu.io.out, Seq(
-    (e_uop.info.fuType === FuType.csr) -> 0.U(p.xlen.W)
+    (e_uop.info.fuType === FuType.csr) -> csrRead(e_uop.csrAddr, cycleCnt)
   ))
 
   // ============================================================
@@ -626,8 +687,8 @@ class Backend(implicit p: CoreParams) extends Module {
   io.commit.valid := w_commit_valid
   io.commit.bits.pc := w_uop.pc
   io.commit.bits.inst := w_uop.inst
-  io.commit.bits.jump := w_redirect.valid
-  io.commit.bits.target := w_redirect.bits
+  io.commit.bits.jump := w_uop.predictedJump || w_redirect.valid
+  io.commit.bits.target := Mux(w_uop.predictedJump, w_uop.predictedTarget, w_redirect.bits)
 
   io.diffCommitValid := w_commit_valid
   io.diffCommitPc := w_uop.pc
@@ -685,6 +746,39 @@ class Backend(implicit p: CoreParams) extends Module {
   assert(!(w_rfen && v_rfen && w_uop.rd === v_rf),
     "Normal W writeback and long writeback target the same GPR")
   rf(0) := 0.U
+
+  val d_stall_sample = io.inst.valid && d_stall
+  perf.cycles := perf.cycles + 1.U
+  when(w_commit_valid) {
+    perf.commits := perf.commits + 1.U
+  }
+  when(d_stall_sample) {
+    perf.dStall := perf.dStall + 1.U
+    when(d_rs1_var_haz) { perf.dRs1VarHaz := perf.dRs1VarHaz + 1.U }
+    when(d_rs2_var_haz) { perf.dRs2VarHaz := perf.dRs2VarHaz + 1.U }
+    when(d_rd_var_haz) { perf.dRdVarHaz := perf.dRdVarHaz + 1.U }
+    when(d_lsu_base_not_ready) { perf.dLsuBaseNotReady := perf.dLsuBaseNotReady + 1.U }
+    when(d_jr_not_ready) { perf.dJrNotReady := perf.dJrNotReady + 1.U }
+    when(d_no_vslot) { perf.dNoVslot := perf.dNoVslot + 1.U }
+    when(d_div_resource_busy) { perf.dDivResourceBusy := perf.dDivResourceBusy + 1.U }
+    when(d_cache_busy) { perf.dCacheBusy := perf.dCacheBusy + 1.U }
+    when(d_uncached_busy) { perf.dUncachedBusy := perf.dUncachedBusy + 1.U }
+  }
+  when(e_redirect.valid) {
+    perf.branchRedirect := perf.branchRedirect + 1.U
+  }
+  when(w_start_refill) {
+    perf.dcacheMiss := perf.dcacheMiss + 1.U
+  }
+  when(w_start_uncached) {
+    perf.uncachedAccess := perf.uncachedAccess + 1.U
+  }
+  when(mulPipe.io.in.valid) {
+    perf.mulStart := perf.mulStart + 1.U
+  }
+  when(divUnit.io.start) {
+    perf.divStart := perf.divStart + 1.U
+  }
 
   // ============================================================
   // Store queue
@@ -944,6 +1038,14 @@ class Backend(implicit p: CoreParams) extends Module {
 
   when(w_start_uncached) {
     val uncached_size = lsuSize(w_uop.info.fuOpType)
+    val simUartAddr = "h80001ff0".U(p.addrBits.W)
+    val simUartStoreData = storeData(w_uop.store_data, w_lsu_addr)
+
+    when(w_is_store && w_lsu_addr === simUartAddr) {
+      simUartValid := true.B
+      simUartBits := simUartStoreData(7, 0)
+    }
+
     u_pc := w_uop.pc
     u_inst := w_uop.inst
     u_addr := w_lsu_addr

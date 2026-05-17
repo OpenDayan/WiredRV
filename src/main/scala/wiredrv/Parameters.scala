@@ -38,7 +38,7 @@ case class CoreParams(
 
   def icacheGetTag(addr: UInt):  UInt = addr(addrBits - 1, icacheSetBits + icacheLineBits)
   def icacheGetSet(addr: UInt):  UInt = addr(icacheSetBits + icacheLineBits - 1, icacheLineBits)
-  def icacheGetWord(addr: UInt): UInt = addr(icacheSetBits + icacheLineBits - 1, 2)
+  def icacheGetWord(addr: UInt): UInt = addr(icacheLineBits - 1, 2)
 
   val dcacheSetBits: Int = log2Ceil(dcacheSets)
   val dcacheLineBits: Int = log2Ceil(dcacheLineBytes)

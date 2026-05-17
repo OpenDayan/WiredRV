@@ -25,6 +25,9 @@ class WiredCoreIO(implicit p: CoreParams) extends Bundle {
   val diffDelayedWbRd = Output(UInt(5.W))
   val diffDelayedWbData = Output(UInt(p.xlen.W))
   val diffRf = Output(Vec(32, UInt(p.xlen.W)))
+  val simUart = Valid(UInt(8.W))
+  val frontendPerf = Output(new FrontendPerfCounters)
+  val backendPerf = Output(new BackendPerfCounters)
 }
 
 class WiredCore(implicit p: CoreParams) extends Module {
@@ -42,6 +45,7 @@ class WiredCore(implicit p: CoreParams) extends Module {
 
   backend.io.inst <> frontend.io.inst
   frontend.io.redirects := backend.io.redirects
+  frontend.io.branchUpdate := backend.io.branchUpdate
   frontend.io.ifencei := backend.io.ifencei
 
   io.inst.valid := backend.io.commit.valid
@@ -59,6 +63,9 @@ class WiredCore(implicit p: CoreParams) extends Module {
   io.diffDelayedWbRd := backend.io.diffDelayedWbRd
   io.diffDelayedWbData := backend.io.diffDelayedWbData
   io.diffRf := backend.io.diffRf
+  io.simUart := backend.io.simUart
+  io.frontendPerf := frontend.io.perf
+  io.backendPerf := backend.io.perf
 
   imemToAxi.io.in <> frontend.io.bus
   dmemToAxi.io.in <> backend.io.bus

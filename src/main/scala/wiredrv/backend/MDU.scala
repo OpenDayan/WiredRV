@@ -106,7 +106,10 @@ class MulPipeline(implicit p: CoreParams) extends Module {
     val out = Valid(new MduWriteback)
   })
 
-  val stages = RegInit(VecInit(Seq.fill(4)(0.U.asTypeOf(Valid(new MduWriteback)))))
+  // W stage is the first multiply pipeline stage; these are the remaining
+  // three stages, so total multiply latency is four stages.
+  private val mulStagesAfterW = 3
+  val stages = RegInit(VecInit(Seq.fill(mulStagesAfterW)(0.U.asTypeOf(Valid(new MduWriteback)))))
 
   io.out := stages.last
 
@@ -115,7 +118,7 @@ class MulPipeline(implicit p: CoreParams) extends Module {
   stages(0).bits.vslot := io.in.bits.vslot
   stages(0).bits.data := MduCalc.mulResult(io.in.bits.src1, io.in.bits.src2, io.in.bits.op)
 
-  for (i <- 1 until 4) {
+  for (i <- 1 until mulStagesAfterW) {
     stages(i) := stages(i - 1)
   }
 }

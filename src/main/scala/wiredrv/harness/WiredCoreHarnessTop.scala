@@ -98,8 +98,7 @@ class AxiDiffMem(axiP: AxiParams)(implicit p: CoreParams) extends Module {
   }
 
   val nextReadAddr = rAddr + beatStep(rSize)
-  val fullBeatRead = rSize >= log2Ceil(beatBytes).U
-  val readAddr = Mux(rState === rResp && io.axi.r.fire && rLenLeft =/= 0.U && fullBeatRead, nextReadAddr, rAddr)
+  val readAddr = Mux(rState === rResp && io.axi.r.fire && rLenLeft =/= 0.U, nextReadAddr, rAddr)
   val alignedAddr = Cat(readAddr(p.addrBits - 1, log2Ceil(beatBytes)), 0.U(log2Ceil(beatBytes).W))
   val readDataLanes = Wire(Vec(lanes, UInt(64.W)))
   for (i <- 0 until lanes) {
@@ -130,6 +129,8 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
     val inst = Valid(UInt(32.W))
     val pc = UInt(p.addrBits.W)
   })
+  val uart = IO(new UARTIO)
+  val simExitOut = IO(Output(Bool()))
 
   val d0 = DifftestModule(new DiffArchEvent, delay = 1, dontCare = true)
   val d1 = DifftestModule(new DiffPhyIntRegState(32), delay = 1, dontCare = true)
@@ -151,6 +152,7 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
 
   val commitValid = core.io.diffCommitValid
   val simExit = commitValid && core.io.diffCommitInst === "h0000006b".U
+  simExitOut := simExit
   val cycleCnt = RegInit(0.U(64.W))
   val instrCnt = RegInit(0.U(64.W))
   val instrCntNext = instrCnt + commitValid.asUInt
@@ -224,6 +226,44 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   d4.code := core.io.diffRf(10)
   d4.pc := core.io.diffCommitPc
 
+  when(simExit) {
+    printf("[perf] frontend cycles=%d instFire=%d backpressure=%d icacheRefill=%d icacheRefillCycles=%d backendRedirect=%d\n",
+      core.io.frontendPerf.cycles,
+      core.io.frontendPerf.instFire,
+      core.io.frontendPerf.backpressure,
+      core.io.frontendPerf.icacheRefill,
+      core.io.frontendPerf.icacheRefillCycles,
+      core.io.frontendPerf.backendRedirect)
+    printf("[perf] icache hit=%d refillDone=%d replay=%d missSetHasValid=%d missSetFull=%d jalPred=%d branchPred=%d ifencei=%d\n",
+      core.io.frontendPerf.icacheHit,
+      core.io.frontendPerf.icacheRefillDone,
+      core.io.frontendPerf.icacheReplay,
+      core.io.frontendPerf.icacheMissSetHasValid,
+      core.io.frontendPerf.icacheMissSetFull,
+      core.io.frontendPerf.jalPred,
+      core.io.frontendPerf.branchPred,
+      core.io.frontendPerf.ifencei)
+    printf("[perf] backend cycles=%d commits=%d dStall=%d branchRedirect=%d dcacheMiss=%d uncachedAccess=%d mulStart=%d divStart=%d\n",
+      core.io.backendPerf.cycles,
+      core.io.backendPerf.commits,
+      core.io.backendPerf.dStall,
+      core.io.backendPerf.branchRedirect,
+      core.io.backendPerf.dcacheMiss,
+      core.io.backendPerf.uncachedAccess,
+      core.io.backendPerf.mulStart,
+      core.io.backendPerf.divStart)
+    printf("[perf] stall rs1Var=%d rs2Var=%d rdVar=%d lsuBase=%d jr=%d noVslot=%d divBusy=%d cacheBusy=%d uncachedBusy=%d\n",
+      core.io.backendPerf.dRs1VarHaz,
+      core.io.backendPerf.dRs2VarHaz,
+      core.io.backendPerf.dRdVarHaz,
+      core.io.backendPerf.dLsuBaseNotReady,
+      core.io.backendPerf.dJrNotReady,
+      core.io.backendPerf.dNoVslot,
+      core.io.backendPerf.dDivResourceBusy,
+      core.io.backendPerf.dCacheBusy,
+      core.io.backendPerf.dUncachedBusy)
+  }
+
   d5.coreid := 0.U
   d5.index := 0.U
   d5.valid := core.io.diffDelayedWbValid
@@ -234,10 +274,33 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   io.pc := core.io.inst.bits.pc
   io.inst.valid := core.io.inst.fire
   io.inst.bits := core.io.inst.bits.inst
+
+  uart.out.valid := core.io.simUart.valid
+  uart.out.ch := core.io.simUart.bits
+  uart.in.valid := false.B
+
+  override def connectTopIOs(difftest: DifftestTopIO): Unit = {
+    difftest.exit := Mux(simExitOut, Fill(64, 1.U), 0.U)
+    difftest.uart <> uart
+  }
 }
 
 object WiredCoreHarnessTopMain extends App {
-  implicit val p: CoreParams = CoreParams()
+  private def isEnabled(value: String): Boolean =
+    value == "1" || value.equalsIgnoreCase("true") || value.equalsIgnoreCase("yes")
+
+  private val simUncachedInRam =
+    sys.props.get("sim-uncached-in-ram").exists(isEnabled) ||
+      sys.env.get("SIM_UNCACHED_IN_RAM").exists(isEnabled)
+
+  implicit val p: CoreParams = {
+    val base = CoreParams()
+    if (simUncachedInRam) {
+      base.copy(uncachedRegions = Seq(AddrRegion(0x80001000L, 0x1000L)))
+    } else {
+      base
+    }
+  }
   ChiselStage.emitSystemVerilog(
     DifftestModule.top(new WiredCoreHarnessTop()),
     firtoolOpts = Array(

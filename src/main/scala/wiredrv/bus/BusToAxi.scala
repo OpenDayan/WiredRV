@@ -60,6 +60,7 @@ class BusToAxi(width: Int)(implicit p: CoreParams) extends Module {
   io.out.aw.bits.qos := 0.U
   io.out.aw.bits.region := 0.U
   io.out.aw.bits.user := 0.U
+  io.out.aw.bits.atop := 0.U
 
   io.out.w.valid := state === sWriteSend && !wSent
   io.out.w.bits.data := reqData

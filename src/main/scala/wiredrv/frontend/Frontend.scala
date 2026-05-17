@@ -14,24 +14,54 @@ class FetchPacket(implicit p: CoreParams) extends Bundle {
   val target = UInt(p.addrBits.W)
 }
 
+class BranchUpdate(implicit p: CoreParams) extends Bundle {
+  val pc = UInt(p.addrBits.W)
+  val taken = Bool()
+}
+
 class FrontendIO(implicit p: CoreParams) extends Bundle {
   val inst = Decoupled(new FetchPacket)
   val redirects = Input(Vec(3, Valid(UInt(p.addrBits.W))))
+  val branchUpdate = Input(Valid(new BranchUpdate))
   val bus = new BusBundle(32)
   val ifencei = Input(Bool())
+  val perf = Output(new FrontendPerfCounters)
+}
+
+class FrontendPerfCounters extends Bundle {
+  val cycles = UInt(64.W)
+  val instFire = UInt(64.W)
+  val backpressure = UInt(64.W)
+  val icacheHit = UInt(64.W)
+  val icacheRefill = UInt(64.W)
+  val icacheRefillDone = UInt(64.W)
+  val icacheRefillCycles = UInt(64.W)
+  val icacheReplay = UInt(64.W)
+  val icacheMissSetHasValid = UInt(64.W)
+  val icacheMissSetFull = UInt(64.W)
+  val jalPred = UInt(64.W)
+  val branchPred = UInt(64.W)
+  val ifencei = UInt(64.W)
+  val backendRedirect = UInt(64.W)
 }
 
 class Frontend(implicit p: CoreParams) extends Module {
   require(p.innerBusWidth == 32, "current frontend only supports 32-bit internal bus")
 
   val io = IO(new FrontendIO)
+  val perf = RegInit(0.U.asTypeOf(new FrontendPerfCounters))
+  io.perf := perf
 
   val frontMissReplay = Wire(Valid(UInt(p.addrBits.W)))
   frontMissReplay.valid := false.B
   frontMissReplay.bits := 0.U
+  val frontPredRedirect = Wire(Valid(UInt(p.addrBits.W)))
+  frontPredRedirect.valid := false.B
+  frontPredRedirect.bits := 0.U
 
-  val allRedir = io.redirects ++ Seq(frontMissReplay)
-  val anyRedir = VecInit(allRedir.map(_.valid)).asUInt.orR
+  val flushRedir = io.redirects ++ Seq(frontMissReplay)
+  val allRedir = flushRedir ++ Seq(frontPredRedirect)
+  val anyFlushRedir = VecInit(flushRedir.map(_.valid)).asUInt.orR
   val backRedir = VecInit(io.redirects.map(_.valid)).asUInt.orR
 
   val frontStall = WireDefault(false.B)
@@ -56,8 +86,12 @@ class Frontend(implicit p: CoreParams) extends Module {
   val f1Hit = WireDefault(false.B)
   val f1Inst = WireDefault(0.U(32.W))
 
-  val rWay = RegInit(0.U(1.W))
-  rWay := rWay + 1.U
+  val replWay = RegInit(VecInit(Seq.fill(p.icacheSets)(false.B)))
+  private val bhtEntries = 1024
+  private val bhtIdxBits = log2Ceil(bhtEntries)
+  val bhtValid = RegInit(VecInit(Seq.fill(bhtEntries)(false.B)))
+  val bhtCtr = RegInit(VecInit(Seq.fill(bhtEntries)(1.U(2.W))))
+  def bhtIndex(pc: UInt): UInt = pc(bhtIdxBits + 1, 2)
 
   val f2Valid = RegInit(false.B)
   val f2Refill = RegInit(false.B)
@@ -72,17 +106,20 @@ class Frontend(implicit p: CoreParams) extends Module {
 
   when(io.ifencei) {
     icValid := 0.U.asTypeOf(icValid)
+    replWay := VecInit(Seq.fill(p.icacheSets)(false.B))
   }
 
   val readTagSet = p.icacheGetSet(pc)
   val writeTagSet = p.icacheGetSet(f2Inst.pc)
   val readDataIdx = p.icacheGetSet(pc) ## p.icacheGetWord(pc)
   val writeDataIdx = p.icacheGetSet(f2Inst.pc) ## rDCnt
+  val rDLast = rDCnt === (beatsPerLine - 1).U
+  val f2RefillEnd = rDLast && io.bus.d.fire
 
   icTags.zipWithIndex.foreach { case (icTag, idx) =>
     icTag.io.r.req.valid := !f2Refill && !frontStall
     icTag.io.r.req.bits.apply(readTagSet)
-    icTag.io.w.req.valid := f2Refill && (rSelWay === idx.U)
+    icTag.io.w.req.valid := f2RefillEnd && (rSelWay === idx.U)
     icTag.io.w.req.bits.apply(WireInit({
       val w = Wire(new ICTag)
       w.tag := p.icacheGetTag(f2Inst.pc)
@@ -110,25 +147,43 @@ class Frontend(implicit p: CoreParams) extends Module {
     f1Valid := false.B
   }
 
-  val rDLast = rDCnt === (beatsPerLine - 1).U
-
-  val f2RefillEnd = rDLast && io.bus.d.valid
   val f2Hold = f2Valid && !io.inst.ready && !backRedir
+  val f2RefillStart = !frontStall && f1Valid && !anyFlushRedir && !f1Hit
+  val f2HitAccept = !frontStall && f1Valid && !anyFlushRedir && f1Hit
+  val f1IsJal = f1Inst(6, 0) === "b1101111".U
+  val f1JalImm = Cat(Fill(p.addrBits - 21, f1Inst(31)), f1Inst(31), f1Inst(19, 12), f1Inst(20), f1Inst(30, 21), 0.U(1.W))
+  val f1JalTarget = (f1pc + f1JalImm)(p.addrBits - 1, 0)
+  val f1IsBranch = f1Inst(6, 0) === "b1100011".U
+  val f1BranchImm = Cat(Fill(p.addrBits - 13, f1Inst(31)), f1Inst(31), f1Inst(7), f1Inst(30, 25), f1Inst(11, 8), 0.U(1.W))
+  val f1BranchTarget = (f1pc + f1BranchImm)(p.addrBits - 1, 0)
+  val f1BhtIdx = bhtIndex(f1pc)
+  val f1BranchTakenPred = Mux(bhtValid(f1BhtIdx), bhtCtr(f1BhtIdx)(1), f1Inst(31))
+  val f1PredictJal = f2HitAccept && f1IsJal
+  val f1PredictBranch = f2HitAccept && f1IsBranch && f1BranchTakenPred
+  val f1PredictJump = f1PredictJal || f1PredictBranch
+  val f1PredictTarget = Mux(f1PredictJal, f1JalTarget, f1BranchTarget)
+  val missSetValidVec = VecInit(icValid.map(_(p.icacheGetSet(f1pc))))
+  val missSetHasValid = missSetValidVec.asUInt.orR
+  val missSetFull = missSetValidVec.asUInt.andR
   frontStall := f2Hold || f2Refill
+  frontPredRedirect.valid := f1PredictJump
+  frontPredRedirect.bits := f1PredictTarget
 
   when(!frontStall) {
-    f2Valid := f1Valid && !anyRedir && f1Hit
-    when(f1Valid && !anyRedir && !f1Hit) {
+    f2Valid := f1Valid && !anyFlushRedir && f1Hit
+    when(f2RefillStart) {
       f2Refill := true.B
-      rSelWay := rWay
+      val missSet = p.icacheGetSet(f1pc)
+      rSelWay := replWay(missSet).asUInt
+      replWay(missSet) := !replWay(missSet)
       rAValid := true.B
       rRValid := true.B
       rDCnt := 0.U
     }
     f2Inst.pc := f1pc
     f2Inst.inst := f1Inst
-    f2Inst.jump := false.B
-    f2Inst.target := 0.U
+    f2Inst.jump := f1PredictJump
+    f2Inst.target := f1PredictTarget
     when(f2Valid) {
       f2SkidV := !io.inst.ready && !backRedir
       f2Skid := f2Inst
@@ -148,10 +203,13 @@ class Frontend(implicit p: CoreParams) extends Module {
   when(f2Refill) {
     rAValid := rAValid && !io.bus.a.ready
     rRValid := false.B
-    icValid(rSelWay)(p.icacheGetSet(f2Inst.pc)) := true.B
     when(io.bus.d.fire) {
       rDCnt := rDCnt + 1.U
     }
+  }
+
+  when(f2RefillEnd && !io.ifencei) {
+    icValid(rSelWay)(p.icacheGetSet(f2Inst.pc)) := true.B
   }
 
   frontMissReplay.valid := rRValid
@@ -165,4 +223,55 @@ class Frontend(implicit p: CoreParams) extends Module {
   io.bus.a.bits.size := 6.U
   io.bus.a.bits.op := ReadOnly
   io.bus.d.ready := f2Refill
+
+  perf.cycles := perf.cycles + 1.U
+  when(io.inst.fire) {
+    perf.instFire := perf.instFire + 1.U
+  }
+  when(f2Hold) {
+    perf.backpressure := perf.backpressure + 1.U
+  }
+  when(f2HitAccept) {
+    perf.icacheHit := perf.icacheHit + 1.U
+  }
+  when(f2RefillStart) {
+    perf.icacheRefill := perf.icacheRefill + 1.U
+    when(missSetHasValid) {
+      perf.icacheMissSetHasValid := perf.icacheMissSetHasValid + 1.U
+    }
+    when(missSetFull) {
+      perf.icacheMissSetFull := perf.icacheMissSetFull + 1.U
+    }
+  }
+  when(f2RefillEnd) {
+    perf.icacheRefillDone := perf.icacheRefillDone + 1.U
+  }
+  when(f2Refill) {
+    perf.icacheRefillCycles := perf.icacheRefillCycles + 1.U
+  }
+  when(frontMissReplay.valid) {
+    perf.icacheReplay := perf.icacheReplay + 1.U
+  }
+  when(io.branchUpdate.valid) {
+    val idx = bhtIndex(io.branchUpdate.bits.pc)
+    val old = bhtCtr(idx)
+    bhtValid(idx) := true.B
+    bhtCtr(idx) := Mux(
+      io.branchUpdate.bits.taken,
+      Mux(old === 3.U, old, old + 1.U),
+      Mux(old === 0.U, old, old - 1.U)
+    )
+  }
+  when(f1PredictJal) {
+    perf.jalPred := perf.jalPred + 1.U
+  }
+  when(f1PredictBranch) {
+    perf.branchPred := perf.branchPred + 1.U
+  }
+  when(io.ifencei) {
+    perf.ifencei := perf.ifencei + 1.U
+  }
+  when(backRedir) {
+    perf.backendRedirect := perf.backendRedirect + 1.U
+  }
 }
