@@ -1,82 +1,150 @@
 # WiredRV
 
-`WiredRV` 是一个基于 Chisel 的 RISC-V 处理器工程，当前主仿真链路基于 `difftest + NEMU`。
+`WiredRV` is a Chisel-based RISC-V processor project. The current simulation
+flow is built around `difftest + NEMU`, while the top-level build entry is kept
+as a small Makefile wrapper over Mill and the difftest Makefile.
 
-## 环境
+## Environment
 
-- `NOOP_HOME` 默认是仓库根目录
-- `NEMU_HOME` 默认是 `/workspace/NEMU`
-- RISC-V 工具链默认是 `/public/riscv-tools/rv64ima/bin/riscv64-unknown-elf-*`
+- `NOOP_HOME` defaults to the repository root.
+- `NEMU_HOME` defaults to `/workspace/NEMU`.
+- The RISC-V toolchain prefix defaults to
+  `/public/riscv-tools/rv64ima/bin/riscv64-unknown-elf`.
+- The project currently keeps `Chisel 6.6.0 + Mill 0.11.8`.
 
-## NEMU 配置
+## Recommended Build Flow
 
-必须使用：
+Initialize submodules:
+
+```bash
+make deps
+```
+
+Compile Scala/Chisel:
+
+```bash
+make compile
+```
+
+Generate SystemVerilog into `build/rtl`:
+
+```bash
+make verilog
+```
+
+`make sim-verilog` is kept as a compatibility alias of `make verilog`.
+
+Build the Verilator emulator through difftest:
+
+```bash
+make emu WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF=Nemu
+```
+
+Run one `riscv-tests` workload with NEMU difftest:
+
+```bash
+EMU_MAX_CYCLES=500000 make difftest-riscv-test TEST=simple
+```
+
+## LaomaSubsystem AXI Dependency
+
+WiredRV uses AXI bundle/type definitions and the fixed `AxiNarrowToWide`
+implementation from the `third_party/LaomaSubsystem` submodule. The submodule
+should point at the `dev/axi5` branch commit that contains:
+
+```text
+Initial commit: add AXI5 Crossbar design files
+```
+
+The local `src/main/scala/lmss/axi/AxiCompat.scala` compatibility file has been
+removed to avoid conflicts with the Laoma definitions. The active AXI sources
+are compiled from:
+
+```text
+third_party/LaomaSubsystem/src/main/scala/lmss/axi/package.scala
+third_party/LaomaSubsystem/src/main/scala/lmss/axi/AxiNarrowToWide.scala
+```
+
+## Makefile Targets
+
+Dependency targets:
+
+- `make deps`: initialize/update all configured git submodules through
+  `scripts/update_submodules.py`.
+
+Chisel/Mill targets:
+
+- `make compile`: compile `wiredrv[6.6.0]`.
+- `make verilog`: run `wiredrv.harness.WiredCoreHarnessTopMain` and generate
+  RTL into `build/rtl`.
+- `make sim-verilog`: compatibility alias of `make verilog`.
+- `make test`: run Scala tests if `src/test/scala` exists; otherwise run
+  `make compile` and print a notice.
+
+Difftest and emulator targets:
+
+- `make emu`: build the Verilator emulator through `difftest`.
+- `make emu-riscv-test`: run one workload without difftest.
+- `make difftest-riscv-test`: run one workload with NEMU difftest.
+- `make parallel-riscv-test`: run the selected `TESTS` list in parallel.
+
+CLI and waveform targets:
+
+- `make cli`: build and launch the interactive emulator CLI when the terminal
+  is interactive.
+- `make run-cli`: launch an already built CLI emulator.
+- `make wave-riscv-test`: run difftest, dump an FST waveform, and optionally
+  start `surver`.
+
+Clean targets:
+
+- `make verilog-clean`: remove generated RTL outputs only.
+- `make clean`: remove all generated build outputs, including `build/`,
+  `generated/`, `wave/`, and `UnitTest.mk`.
+
+## NEMU Configuration
+
+Use:
 
 ```bash
 make -C /workspace/NEMU riscv64-nutshell-ref_defconfig
 make -C /workspace/NEMU -j2
 ```
 
-不要使用 `riscv64-xs-ref_defconfig`。  
-当前 DUT 导出的 difftest 状态较小，`xs-ref` 会打开过多状态，运行时会报：
+Do not use `riscv64-xs-ref_defconfig` for the current DUT. The exported
+difftest state is smaller than the XS reference state and can fail with:
 
 ```text
 ERROR: NEMU (1400B) is configured with different states than DUT (408B).
 ```
 
-## 常用命令
+## Common Commands
 
-编译 Scala/Chisel：
-
-```bash
-mill 'wiredrv[6.6.0].compile'
-```
-
-生成 Verilog：
-
-```bash
-make sim-verilog
-```
-
-构建 NEMU 参考模型：
+Build NEMU reference:
 
 ```bash
 make nemu-ref
 ```
 
-构建 `emu`：
-
-```bash
-make emu WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF=Nemu
-```
-
-构建支持波形的 CLI 版本：
+Build a waveform-capable CLI emulator:
 
 ```bash
 make emu-cli WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF=Nemu
 ```
 
-编译并启动 CLI：
+Build and start CLI:
 
 ```bash
 make cli TEST=simple WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF=Nemu
 ```
 
-仅启动已编译好的 CLI：
+Start an already built CLI:
 
 ```bash
 make run-cli TEST=simple
 ```
 
-## Difftest
-
-运行单个 `riscv-tests`：
-
-```bash
-EMU_MAX_CYCLES=500000 make difftest-riscv-test TEST=simple
-```
-
-直接运行 `emu`：
+Directly run the emulator:
 
 ```bash
 ./build/emu \
@@ -85,7 +153,7 @@ EMU_MAX_CYCLES=500000 make difftest-riscv-test TEST=simple
   -I 200000
 ```
 
-限制最大周期数：
+Limit maximum cycles:
 
 ```bash
 ./build/emu \
@@ -95,54 +163,52 @@ EMU_MAX_CYCLES=500000 make difftest-riscv-test TEST=simple
   -C 500000
 ```
 
-说明：
+Options:
 
-- `-I`：最大指令数
-- `-C`：最大周期数；默认不限
+- `-I`: maximum instruction count.
+- `-C`: maximum cycle count; empty by default.
 
-## CLI
+## CLI Notes
 
-启动 CLI 的底层命令等价于：
+The underlying CLI launch command is equivalent to:
 
 ```bash
 ./build/emu -i build/workloads/rv64ui-simple.elf --diff /workspace/NEMU/build/riscv64-nemu-interpreter-so -I 200000 --cli
 ```
 
-CLI 常用命令：
+Useful CLI commands:
 
-- `n <N>`：运行 `N` 个周期
-- `nd <N>`：运行 `N` 个周期后导出波形并启动 `surver`
-- `c`：持续运行直到仿真结束
-- `d`：导出波形并启动 `surver`
-- `t`：切换波形记录
-- `status`：显示当前状态
-- `q` / `quit` / `exit`：退出
+- `n <N>`: run `N` cycles.
+- `nd <N>`: run `N` cycles, dump waveform, and start `surver`.
+- `c`: continue until simulation ends.
+- `d`: dump waveform and start `surver`.
+- `t`: toggle waveform tracing.
+- `status`: show current state.
+- `q` / `quit` / `exit`: exit.
 
-说明：
+`make cli` and `make run-cli` use a trace-capable emulator by default. If
+`--wave-path` is not specified, the emulator creates a default waveform path.
+For `d`, `nd`, or `t`, rebuild with `make emu-cli ...` or explicitly set
+`EMU_TRACE=fst`.
 
-- `make cli` / `make run-cli` 使用 trace 版 `emu` 时，CLI 默认启动波形记录
-- 这样会从仿真起点开始录波，包括 reset
-- 未显式指定 `--wave-path` 时，会自动生成一个默认波形文件路径
-- 如果需要 `d/nd/t`，请使用 `make emu-cli ...` 或显式用 `EMU_TRACE=fst` 重编
+## One-shot Wave Debug
 
-## 一体式波形调试
-
-推荐命令：
+Recommended command:
 
 ```bash
 ./scripts/run-difftest-wave.sh simple
 ```
 
-该脚本会：
+The script:
 
-1. 编译 workload
-2. 生成反汇编
-3. 用 `EMU_TRACE=fst` 重编 `emu`
-4. 运行 difftest
-5. 导出 `fst` 波形
-6. 在前台启动 `surver`
+1. Builds the workload.
+2. Generates disassembly.
+3. Rebuilds `emu` with `EMU_TRACE=fst`.
+4. Runs difftest.
+5. Dumps an FST waveform.
+6. Starts `surver` in the foreground unless disabled.
 
-常用变量：
+Useful variables:
 
 ```bash
 NO_SERVER=1 ./scripts/run-difftest-wave.sh simple
@@ -154,15 +220,15 @@ EMU_MAX_CYCLES=500000 ./scripts/run-difftest-wave.sh simple
 NEMU_REF_SO=/workspace/NEMU/build/riscv64-nemu-interpreter-so ./scripts/run-difftest-wave.sh simple
 ```
 
-输出位置：
+Outputs:
 
-- ELF：`build/workloads/<isa>-<test>.elf`
-- 反汇编：`build/disasm/<isa>-<test>.txt`
-- 波形：`wave/<isa>-<test>.fst`
+- ELF: `build/workloads/<isa>-<test>.elf`
+- Disassembly: `build/disasm/<isa>-<test>.txt`
+- Waveform: `wave/<isa>-<test>.fst`
 
-## 可用测试
+## Available rv64ui Tests
 
-默认面向 `rv64ui`。当前常用测试包括：
+Common tests include:
 
 ```text
 simple
@@ -180,9 +246,9 @@ sb sh sw sd
 fence_i
 ```
 
-枚举方式：
+List tests with:
 
 ```bash
 cd third_party/riscv-tests/isa/rv64ui
-printf '%s\n' *.S | sed 's/\\.S$//' | sort
+printf '%s\n' *.S | sed 's/\.S$//' | sort
 ```
