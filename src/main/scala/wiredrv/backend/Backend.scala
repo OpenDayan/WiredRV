@@ -8,6 +8,27 @@ import wiredrv.bus.BusOp.{ReadOnly, StoreOnly}
 import wiredrv.frontend.{BranchUpdate, FetchPacket}
 import xs.utils.sram.SRAMTemplate
 
+class CoreCsrState(implicit p: CoreParams) extends Bundle {
+  val privilegeMode = UInt(p.xlen.W)
+  val mstatus = UInt(p.xlen.W)
+  val sstatus = UInt(p.xlen.W)
+  val mepc = UInt(p.xlen.W)
+  val sepc = UInt(p.xlen.W)
+  val mtval = UInt(p.xlen.W)
+  val stval = UInt(p.xlen.W)
+  val mtvec = UInt(p.xlen.W)
+  val stvec = UInt(p.xlen.W)
+  val mcause = UInt(p.xlen.W)
+  val scause = UInt(p.xlen.W)
+  val satp = UInt(p.xlen.W)
+  val mip = UInt(p.xlen.W)
+  val mie = UInt(p.xlen.W)
+  val mscratch = UInt(p.xlen.W)
+  val sscratch = UInt(p.xlen.W)
+  val mideleg = UInt(p.xlen.W)
+  val medeleg = UInt(p.xlen.W)
+}
+
 class BackendUop(implicit p: CoreParams) extends Bundle {
   val pc = UInt(p.addrBits.W)
   val inst = UInt(32.W)
@@ -21,6 +42,7 @@ class BackendUop(implicit p: CoreParams) extends Bundle {
   val imm = UInt(p.xlen.W)
   val csrAddr = UInt(12.W)
   val exceptionCode = UInt(16.W)
+  val isInterrupt = Bool()
 
   val src1 = UInt(p.xlen.W)
   val src2 = UInt(p.xlen.W)
@@ -84,6 +106,12 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val io = IO(new Bundle {
     val inst = Flipped(Decoupled(new FetchPacket))
+    val hartId = Input(UInt(p.maxHartIdBits.W))
+    val mtip = Input(Bool())
+    val msip = Input(Bool())
+    val meip = Input(Bool())
+    val debug = Input(Bool())
+    val time = Input(Valid(UInt(64.W)))
     val redirects = Output(Vec(3, Valid(UInt(p.addrBits.W))))
     val branchUpdate = Output(Valid(new BranchUpdate))
     val ifencei = Output(Bool())
@@ -102,6 +130,12 @@ class Backend(implicit p: CoreParams) extends Module {
     val diffDelayedWbRd = Output(UInt(5.W))
     val diffDelayedWbData = Output(UInt(p.xlen.W))
     val diffRf = Output(Vec(32, UInt(p.xlen.W)))
+    val diffCsr = Output(new CoreCsrState)
+    val diffTrapValid = Output(Bool())
+    val diffTrapIsInterrupt = Output(Bool())
+    val diffTrapCode = Output(UInt(p.xlen.W))
+    val diffTrapPc = Output(UInt(p.addrBits.W))
+    val diffTrapInst = Output(UInt(32.W))
     val simUart = Valid(UInt(8.W))
     val perf = Output(new BackendPerfCounters)
   })
@@ -200,8 +234,26 @@ class Backend(implicit p: CoreParams) extends Module {
 
   private def csrRead(addr: UInt, cycle: UInt): UInt =
     MuxLookup(addr, 0.U(p.xlen.W))(Seq(
+      "h300".U(12.W) -> mstatus,
+      "h304".U(12.W) -> mie,
+      "h305".U(12.W) -> mtvec,
+      "h340".U(12.W) -> mscratch,
+      "h341".U(12.W) -> mepc,
+      "h342".U(12.W) -> mcause,
+      "h343".U(12.W) -> mtval,
+      "h344".U(12.W) -> mipRead,
+      "hc01".U(12.W) -> csrTime,
+      "hc81".U(12.W) -> Cat(0.U(32.W), csrTime(63, 32)),
       "hb00".U(12.W) -> cycle, // mcycle
-      "hb80".U(12.W) -> Cat(0.U(32.W), cycle(63, 32)) // mcycleh, useful for RV32-style code
+      "hb80".U(12.W) -> Cat(0.U(32.W), cycle(63, 32)), // mcycleh, useful for RV32-style code
+      "hf14".U(12.W) -> Cat(0.U((p.xlen - p.maxHartIdBits).W), io.hartId)
+    ))
+
+  private def csrWriteData(op: UInt, old: UInt, src: UInt): UInt =
+    MuxLookup(op, old)(Seq(
+      CsrOp.csrrw -> src,
+      CsrOp.csrrs -> (old | src),
+      CsrOp.csrrc -> (old & ~src)
     ))
 
   private def mergeByMask(base: UInt, data: UInt, mask: UInt): UInt = {
@@ -234,6 +286,28 @@ class Backend(implicit p: CoreParams) extends Module {
   val rf = RegInit(VecInit(Seq.fill(32)(0.U(p.xlen.W))))
   val cycleCnt = RegInit(0.U(p.xlen.W))
   val perf = RegInit(0.U.asTypeOf(new BackendPerfCounters))
+  val mstatus = RegInit(0.U(p.xlen.W))
+  val mtvec = RegInit(0.U(p.xlen.W))
+  val mepc = RegInit(0.U(p.xlen.W))
+  val mcause = RegInit(0.U(p.xlen.W))
+  val mtval = RegInit(0.U(p.xlen.W))
+  val mie = RegInit(0.U(p.xlen.W))
+  val mip = RegInit(0.U(p.xlen.W))
+  val mscratch = RegInit(0.U(p.xlen.W))
+  private val mstatusMieBit = 3
+  private val mstatusMpieBit = 7
+  private val mstatusMieMask = (BigInt(1) << mstatusMieBit).U(p.xlen.W)
+  private val mstatusMpieMask = (BigInt(1) << mstatusMpieBit).U(p.xlen.W)
+  private val msipMask = (BigInt(1) << 3).U(p.xlen.W)
+  private val mtipMask = (BigInt(1) << 7).U(p.xlen.W)
+  private val meipMask = (BigInt(1) << 11).U(p.xlen.W)
+  val linePendingMask =
+    Mux(io.msip, msipMask, 0.U(p.xlen.W)) |
+    Mux(io.mtip, mtipMask, 0.U(p.xlen.W)) |
+    Mux(io.meip, meipMask, 0.U(p.xlen.W))
+  val mipRead = mip | linePendingMask
+  val enabledInterrupts = mie & mipRead
+  val csrTime = Mux(io.time.valid, io.time.bits, cycleCnt)
   cycleCnt := cycleCnt + 1.U
   io.perf := perf
 
@@ -377,6 +451,21 @@ class Backend(implicit p: CoreParams) extends Module {
   io.diffDelayedWbRd := 0.U
   io.diffDelayedWbData := 0.U
   io.diffRf := 0.U.asTypeOf(Vec(32, UInt(p.xlen.W)))
+  io.diffCsr := 0.U.asTypeOf(new CoreCsrState)
+  io.diffCsr.privilegeMode := 3.U
+  io.diffCsr.mstatus := mstatus
+  io.diffCsr.mepc := mepc
+  io.diffCsr.mtval := mtval
+  io.diffCsr.mtvec := mtvec
+  io.diffCsr.mcause := mcause
+  io.diffCsr.mip := mipRead
+  io.diffCsr.mie := mie
+  io.diffCsr.mscratch := mscratch
+  io.diffTrapValid := false.B
+  io.diffTrapIsInterrupt := false.B
+  io.diffTrapCode := 0.U
+  io.diffTrapPc := 0.U
+  io.diffTrapInst := 0.U
   simUartValid := false.B
   io.simUart.valid := simUartValid
   io.simUart.bits := simUartBits
@@ -493,7 +582,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_is_uncached = d_dec.info.isLsu && !d_is_cmo && inRegions(d_lsu_addr, p.uncachedRegions)
   val d_is_mext_long_latency = d_dec.info.fuType === FuType.mdu
   val d_is_div = d_is_mext_long_latency && MduCalc.isDivOp(d_dec.info.fuOpType)
-  val d_need_vslot = d_is_uncached || (d_is_mext_long_latency && d_writes_rd)
+  val d_need_vslot_raw = d_is_uncached || (d_is_mext_long_latency && d_writes_rd)
   val e_is_div = e_valid && !e_uop.flushed && e_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(e_uop.info.fuOpType)
   val w_is_div_pipe = w_valid && !w_uop.flushed && w_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(w_uop.info.fuOpType)
 
@@ -503,7 +592,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_rs1_e_haz = d_uses_rs1 && hitE(d_rs1)
   val d_lsu_base_not_ready = d_dec.info.isLsu && d_rs1_e_haz && !d_lsu_base_e_forward
   val d_jr_not_ready = d_is_jalr && d_uses_rs1 && (hitE(d_rs1) || hitVar(d_rs1))
-  val d_no_vslot = d_need_vslot && !vAllocator.io.allocate.valid
+  val d_no_vslot = d_need_vslot_raw && !vAllocator.io.allocate.valid
   val d_div_resource_busy = d_is_div && d_writes_rd &&
     (e_is_div || w_is_div_pipe || divUnit.io.busy || div_wb_pending_valid)
   val d_cache_busy = r_state =/= DCacheRefillState.idle
@@ -515,22 +604,36 @@ class Backend(implicit p: CoreParams) extends Module {
 
   io.inst.ready := !d_stall
   val d_fire = io.inst.valid && io.inst.ready
+  val d_interrupt_enabled = mstatus(mstatusMieBit) && (enabledInterrupts =/= 0.U)
+  val d_interrupt_cause = Mux(
+    enabledInterrupts(11),
+    11.U(4.W),
+    Mux(enabledInterrupts(3), 3.U(4.W), Mux(enabledInterrupts(7), 7.U(4.W), 0.U(4.W)))
+  )
+  val d_interrupt_take = d_fire && d_interrupt_enabled
   val d_flushed = d_fire && (e_redirect.valid || w_redirect.valid)
   val d_vslot = vAllocator.io.allocate.bits
+  val d_need_vslot = d_need_vslot_raw && !d_interrupt_take
   vAllocator.io.allocate.ready := d_fire && d_need_vslot
 
   val d_make_uop = Wire(new BackendUop)
+  val d_uop_info = WireDefault(d_dec.info)
+  when(d_interrupt_take) {
+    d_uop_info := 0.U.asTypeOf(new DecodeInfo)
+    d_uop_info.fuType := FuType.csr
+  }
   d_make_uop.pc := d_pc
   d_make_uop.inst := d_inst
   d_make_uop.predictedJump := io.inst.bits.jump
   d_make_uop.predictedTarget := io.inst.bits.target
-  d_make_uop.info := d_dec.info
+  d_make_uop.info := d_uop_info
   d_make_uop.rs1 := d_rs1
   d_make_uop.rs2 := d_rs2
   d_make_uop.rd := d_rd
   d_make_uop.imm := d_dec.imm
   d_make_uop.csrAddr := d_dec.csrAddr
-  d_make_uop.exceptionCode := d_exception_code
+  d_make_uop.exceptionCode := Mux(d_interrupt_take, Cat(0.U(12.W), d_interrupt_cause), d_exception_code)
+  d_make_uop.isInterrupt := d_interrupt_take
   d_make_uop.src1 := d_src1
   d_make_uop.src2 := d_src2
   d_make_uop.store_data := d_rs2_data
@@ -544,14 +647,14 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_jal_target = (d_pc + d_dec.imm)(p.addrBits - 1, 0)
   val d_jalr_target = ((d_rs1_data + d_dec.imm) & ~1.U(p.addrBits.W))(p.addrBits - 1, 0)
   val d_jal_predicted = io.inst.bits.jump && io.inst.bits.target === d_jal_target
-  d_early_redirect.valid := d_fire && !d_flushed && ((d_is_jal && !d_jal_predicted) || d_is_jalr)
+  d_early_redirect.valid := d_fire && !d_flushed && !d_interrupt_take && ((d_is_jal && !d_jal_predicted) || d_is_jalr)
   d_early_redirect.bits := Mux(d_is_jalr, d_jalr_target, d_jal_target)
 
   val d_dcache_set = p.dcacheGetSet(d_lsu_addr)
   val d_dcache_idx = dcacheDataIdx(d_lsu_addr)
   val d_cache_access = d_dec.info.isLsu && !d_is_uncached
-  val d_read_tag = d_fire && d_cache_access && !d_lsu_misaligned
-  val d_read_data = d_fire && d_is_load && !d_is_uncached && !d_lsu_misaligned
+  val d_read_tag = d_fire && !d_interrupt_take && d_cache_access && !d_lsu_misaligned
+  val d_read_data = d_fire && !d_interrupt_take && d_is_load && !d_is_uncached && !d_lsu_misaligned
   for (i <- 0 until p.dcacheWays) {
     dc_tags(i).io.r.req.valid := d_read_tag
     dc_tags(i).io.r.req.bits.apply(d_dcache_set)
@@ -644,23 +747,34 @@ class Backend(implicit p: CoreParams) extends Module {
   // ============================================================
 
   val w_can_commit = w_valid && !w_uop.flushed
-  val w_exception = w_can_commit && (w_uop.exceptionCode =/= 0.U || w_uop.info.illegal)
+  val w_trap = w_can_commit && (w_uop.isInterrupt || w_uop.exceptionCode =/= 0.U || w_uop.info.illegal)
+  val w_trap_code = Mux(w_uop.info.illegal && !w_uop.isInterrupt, 2.U(16.W), w_uop.exceptionCode)
+  val w_trap_code_xlen = Cat(0.U((p.xlen - 16).W), w_trap_code)
+  val w_interrupt_mcause_flag = Cat(1.B, 0.U((p.xlen - 1).W))
+  val w_trap_mcause = Mux(w_uop.isInterrupt, w_interrupt_mcause_flag | w_trap_code_xlen, w_trap_code_xlen)
   val w_is_load = w_uop.info.isLsu && !w_uop.info.isStore && !w_is_cmo
   val w_is_store = w_uop.info.isStore
   val w_lsu_addr = (w_uop.src1 + w_uop.imm)(p.addrBits - 1, 0)
   val w_is_uncached = w_uop.info.isLsu && !w_is_cmo && inRegions(w_lsu_addr, p.uncachedRegions)
   val w_is_fence_i = w_uop.inst === RV64IInstructions.FENCE_I.value.U
-  val w_flush_pipe = w_can_commit && !w_exception && w_uop.info.flushPipe
-  val w_store_commit = w_can_commit && !w_is_uncached && w_is_store && w_hit && !w_miss && !w_exception
-  val w_start_refill = w_can_commit && !w_is_uncached && w_miss && r_state === DCacheRefillState.idle && u_state === UncachedState.idle
-  val w_start_cmo = w_can_commit && !w_is_uncached && w_is_cmo && r_state === DCacheRefillState.idle && u_state === UncachedState.idle
-  val w_start_uncached = w_can_commit && w_is_uncached && !w_exception && r_state === DCacheRefillState.idle && u_state === UncachedState.idle
+  val w_is_mret = w_uop.info.fuType === FuType.csr && w_uop.info.fuOpType === CsrOp.mret
+  val w_mret_commit = w_can_commit && !w_trap && w_is_mret
+  val w_flush_pipe = w_can_commit && !w_trap && !w_mret_commit && w_uop.info.flushPipe
+  val w_store_commit = w_can_commit && !w_is_uncached && w_is_store && w_hit && !w_miss && !w_trap
+  val w_start_refill = w_can_commit && !w_trap && !w_is_uncached && w_miss && r_state === DCacheRefillState.idle && u_state === UncachedState.idle
+  val w_start_cmo = w_can_commit && !w_trap && !w_is_uncached && w_is_cmo && r_state === DCacheRefillState.idle && u_state === UncachedState.idle
+  val w_start_uncached = w_can_commit && w_is_uncached && !w_trap && r_state === DCacheRefillState.idle && u_state === UncachedState.idle
   val w_is_mdu = w_uop.info.fuType === FuType.mdu
   val w_mdu_needs_wb = w_uop.vslot_valid && nonZeroReg(w_uop.rd)
-  val w_mdu_can_start = w_can_commit && w_is_mdu && w_mdu_needs_wb && !w_exception && !w_miss
+  val w_mdu_can_start = w_can_commit && w_is_mdu && w_mdu_needs_wb && !w_trap && !w_miss
   val w_mdu_is_mul = MduCalc.isMulOp(w_uop.info.fuOpType)
   val w_mdu_is_div = MduCalc.isDivOp(w_uop.info.fuOpType)
-  val w_trap_vector = p.resetPc.U(p.addrBits.W)
+  val w_trap_vector = mtvec(p.addrBits - 1, 0)
+  val w_csr_op = w_uop.info.fuType === FuType.csr &&
+    (w_uop.info.fuOpType === CsrOp.csrrw || w_uop.info.fuOpType === CsrOp.csrrs || w_uop.info.fuOpType === CsrOp.csrrc)
+  val w_csr_write_commit = w_can_commit && !w_trap && !w_mret_commit && !w_miss && w_csr_op
+  val w_csr_src = Mux(w_uop.info.src2Type === SrcType.imm, w_uop.src2, w_uop.src1)
+  val w_csr_write_data = csrWriteData(w_uop.info.fuOpType, w_result, w_csr_src)
 
   mulPipe.io.in.valid := w_mdu_can_start && w_mdu_is_mul
   mulPipe.io.in.bits.src1 := w_uop.src1
@@ -678,20 +792,20 @@ class Backend(implicit p: CoreParams) extends Module {
   assert(!(w_mdu_can_start && w_mdu_is_div && (divUnit.io.busy || div_wb_pending_valid)),
     "DivUnit accepted a second request while busy")
 
-  w_redirect.valid := w_can_commit && (w_miss || w_is_cmo || w_exception || w_flush_pipe || w_start_uncached)
+  w_redirect.valid := w_can_commit && (w_miss || w_is_cmo || w_trap || w_mret_commit || w_flush_pipe || w_start_uncached)
   w_redirect.bits := Mux(
-    w_miss,
-    w_uop.pc,
-    Mux(w_exception, w_trap_vector, (w_uop.pc + 4.U)(p.addrBits - 1, 0))
+    w_trap,
+    w_trap_vector,
+    Mux(w_mret_commit, mepc(p.addrBits - 1, 0), Mux(w_miss, w_uop.pc, (w_uop.pc + 4.U)(p.addrBits - 1, 0)))
   )
 
   w_rfdata := Mux(w_is_load, w_load_data, Mux(w_uop.info.fuType === FuType.jmp, w_uop.pc + 4.U, w_result))
-  w_rfen := w_can_commit && !w_exception && w_uop.info.rwen && nonZeroReg(w_uop.rd) && !w_miss && !w_is_uncached && !w_is_mdu
-  val w_diff_rfwen = w_can_commit && !w_exception && w_uop.info.rwen && nonZeroReg(w_uop.rd) && !w_miss && !w_is_uncached
+  w_rfen := w_can_commit && !w_trap && !w_mret_commit && w_uop.info.rwen && nonZeroReg(w_uop.rd) && !w_miss && !w_is_uncached && !w_is_mdu
+  val w_diff_rfwen = w_can_commit && !w_trap && !w_mret_commit && w_uop.info.rwen && nonZeroReg(w_uop.rd) && !w_miss && !w_is_uncached
 
   io.ifencei := w_flush_pipe && w_is_fence_i && !w_miss
 
-  val w_commit_valid = w_can_commit && !w_miss && !w_exception && !w_is_uncached
+  val w_commit_valid = w_can_commit && !w_miss && !w_trap && !w_mret_commit && !w_is_uncached
   io.commit.valid := w_commit_valid
   io.commit.bits.pc := w_uop.pc
   io.commit.bits.inst := w_uop.inst
@@ -706,6 +820,11 @@ class Backend(implicit p: CoreParams) extends Module {
   io.diffCommitIsLoad := w_is_load
   io.diffCommitIsStore := w_is_store
   io.diffCommitIsDelayedWb := w_diff_rfwen && w_is_mdu
+  io.diffTrapValid := w_trap
+  io.diffTrapIsInterrupt := w_uop.isInterrupt
+  io.diffTrapCode := w_trap_code_xlen
+  io.diffTrapPc := w_uop.pc
+  io.diffTrapInst := w_uop.inst
 
   val service_div_pending = div_wb_pending_valid && !mulPipe.io.out.valid
   when(service_div_pending) {
@@ -726,7 +845,7 @@ class Backend(implicit p: CoreParams) extends Module {
   w_cancel_release_vslot := w_valid && w_uop.flushed && w_uop.vslot_valid
   w_cancel_release_slot := w_uop.vslot
   val w_release_vslot =
-    (w_start_refill || (w_can_commit && w_is_mdu && w_exception)) && w_uop.vslot_valid
+    (w_start_refill || (w_can_commit && w_is_mdu && w_trap)) && w_uop.vslot_valid
 
   v_release_vslot := long_wb_valid || w_release_vslot
   v_release_slot := Mux(long_wb_valid, long_wb_bits.vslot, w_uop.vslot)
@@ -754,6 +873,28 @@ class Backend(implicit p: CoreParams) extends Module {
   assert(!(w_rfen && v_rfen && w_uop.rd === v_rf),
     "Normal W writeback and long writeback target the same GPR")
   rf(0) := 0.U
+
+  when(w_trap) {
+    val trapMstatusBase = mstatus & ~mstatusMieMask & ~mstatusMpieMask
+    mstatus := trapMstatusBase | Mux(mstatus(mstatusMieBit), mstatusMpieMask, 0.U)
+    mepc := w_uop.pc
+    mcause := w_trap_mcause
+    mtval := 0.U
+  }.elsewhen(w_mret_commit) {
+    val mretMstatusBase = mstatus & ~mstatusMieMask & ~mstatusMpieMask
+    mstatus := mretMstatusBase | mstatusMpieMask | Mux(mstatus(mstatusMpieBit), mstatusMieMask, 0.U)
+  }.elsewhen(w_csr_write_commit) {
+    switch(w_uop.csrAddr) {
+      is("h300".U) { mstatus := w_csr_write_data }
+      is("h304".U) { mie := w_csr_write_data }
+      is("h305".U) { mtvec := w_csr_write_data }
+      is("h340".U) { mscratch := w_csr_write_data }
+      is("h341".U) { mepc := w_csr_write_data }
+      is("h342".U) { mcause := w_csr_write_data }
+      is("h343".U) { mtval := w_csr_write_data }
+      is("h344".U) { mip := w_csr_write_data }
+    }
+  }
 
   val d_stall_sample = io.inst.valid && d_stall
   perf.cycles := perf.cycles + 1.U

@@ -13,6 +13,7 @@ case class CoreParams(
   xlen: Int = 64,
   addrBits: Int = 39,
   resetPc: BigInt = 0x80000000L,
+  maxHartIdBits: Int = 1,
   innerBusWidth: Int = 32,
   outerBusWidth: Int = 64,
   icacheSets: Int = 256,
@@ -27,6 +28,7 @@ case class CoreParams(
 ) {
   require(isPow2(innerBusWidth / 8), "innerBusWidth must be power-of-two bytes")
   require(isPow2(outerBusWidth / 8), "outerBusWidth must be power-of-two bytes")
+  require(maxHartIdBits > 0 && maxHartIdBits <= xlen, "maxHartIdBits must fit in xlen")
   require(icacheWays == 2, "current frontend skeleton assumes 2-way icache")
   require(dcacheWays == 2, "current backend skeleton assumes 2-way dcache")
   require(icacheLineBytes >= 4 && (icacheLineBytes & (icacheLineBytes - 1)) == 0)

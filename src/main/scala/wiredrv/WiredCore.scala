@@ -13,6 +13,12 @@ class WiredCoreIO(implicit p: CoreParams) extends Bundle {
     AxiParams(addrBits = p.addrBits, idBits = 4, dataBits = p.outerBusWidth),
     AxiParams(addrBits = p.addrBits, idBits = 4, dataBits = p.outerBusWidth)
   )))
+  val hartId = Input(UInt(p.maxHartIdBits.W))
+  val mtip = Input(Bool())
+  val msip = Input(Bool())
+  val meip = Input(Bool())
+  val debug = Input(Bool())
+  val time = Input(Valid(UInt(64.W)))
   val diffCommitValid = Output(Bool())
   val diffCommitPc = Output(UInt(p.addrBits.W))
   val diffCommitInst = Output(UInt(32.W))
@@ -25,6 +31,12 @@ class WiredCoreIO(implicit p: CoreParams) extends Bundle {
   val diffDelayedWbRd = Output(UInt(5.W))
   val diffDelayedWbData = Output(UInt(p.xlen.W))
   val diffRf = Output(Vec(32, UInt(p.xlen.W)))
+  val diffCsr = Output(new CoreCsrState)
+  val diffTrapValid = Output(Bool())
+  val diffTrapIsInterrupt = Output(Bool())
+  val diffTrapCode = Output(UInt(p.xlen.W))
+  val diffTrapPc = Output(UInt(p.addrBits.W))
+  val diffTrapInst = Output(UInt(32.W))
   val simUart = Valid(UInt(8.W))
   val frontendPerf = Output(new FrontendPerfCounters)
   val backendPerf = Output(new BackendPerfCounters)
@@ -44,6 +56,12 @@ class WiredCore(implicit p: CoreParams) extends Module {
   val xbar = Module(new LmssAxiXbar(Seq(outerAxi, outerAxi)))
 
   backend.io.inst <> frontend.io.inst
+  backend.io.hartId := io.hartId
+  backend.io.mtip := io.mtip
+  backend.io.msip := io.msip
+  backend.io.meip := io.meip
+  backend.io.debug := io.debug
+  backend.io.time := io.time
   frontend.io.redirects := backend.io.redirects
   frontend.io.branchUpdate := backend.io.branchUpdate
   frontend.io.ifencei := backend.io.ifencei
@@ -63,6 +81,12 @@ class WiredCore(implicit p: CoreParams) extends Module {
   io.diffDelayedWbRd := backend.io.diffDelayedWbRd
   io.diffDelayedWbData := backend.io.diffDelayedWbData
   io.diffRf := backend.io.diffRf
+  io.diffCsr := backend.io.diffCsr
+  io.diffTrapValid := backend.io.diffTrapValid
+  io.diffTrapIsInterrupt := backend.io.diffTrapIsInterrupt
+  io.diffTrapCode := backend.io.diffTrapCode
+  io.diffTrapPc := backend.io.diffTrapPc
+  io.diffTrapInst := backend.io.diffTrapInst
   io.simUart := backend.io.simUart
   io.frontendPerf := frontend.io.perf
   io.backendPerf := backend.io.perf

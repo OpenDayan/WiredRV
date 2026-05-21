@@ -1,4 +1,4 @@
-.PHONY: help deps compile verilog sim-verilog test emu emu-wave emu-cli cli run-cli clean verilog-clean nemu-ref riscv-test-workload emu-riscv-test difftest-riscv-test parallel-riscv-test wave-riscv-test coremark-workload emu-coremark
+.PHONY: help deps compile verilog sim-verilog test emu emu-wave emu-cli cli run-cli clean verilog-clean nemu-ref riscv-test-workload emu-riscv-test difftest-riscv-test parallel-riscv-test wave-riscv-test emu-interrupt-test coremark-workload emu-coremark
 
 # -----------------------------------------------------------------------------
 # Project and tool configuration
@@ -45,6 +45,12 @@ TEST_JOBS ?= $(shell n=$$(nproc 2>/dev/null || echo 1); if [ $$n -gt 8 ]; then e
 EMU_MAX_INSTR ?= 200000
 EMU_MAX_CYCLES ?=
 EMU_CYCLE_FLAG := $(if $(strip $(EMU_MAX_CYCLES)),-C $(EMU_MAX_CYCLES),)
+EMU_EXTRA_ARGS ?=
+EMU_EXTRA_ARG_FLAG := $(if $(strip $(EMU_EXTRA_ARGS)),-- $(EMU_EXTRA_ARGS),)
+INTERRUPT_START ?= 1000
+INTERRUPT_LEN ?= 100000
+INTERRUPT_CAUSE ?= 11
+INTERRUPT_EMU_ARGS := +interrupt-start=$(INTERRUPT_START) +interrupt-len=$(INTERRUPT_LEN) +interrupt-source=$(INTERRUPT_CAUSE)
 
 WORKLOAD_ELF ?= $(NOOP_HOME)/build/workloads/$(ISA_SUITE)-$(TEST).elf
 WORKLOAD_DISASM ?= $(NOOP_HOME)/build/disasm/$(ISA_SUITE)-$(TEST).txt
@@ -52,6 +58,7 @@ EMU_CLI_FLAGS := -i $(WORKLOAD_ELF) --diff $(NEMU_REF_SO) -I $(EMU_MAX_INSTR) $(
 LOCAL_RISCV_TEST_SRC := $(RISCV_TEST_ENV)/isa/$(ISA_SUITE)/$(TEST).S
 UPSTREAM_RISCV_TEST_SRC := $(RISCV_TESTS_HOME)/isa/$(ISA_SUITE)/$(TEST).S
 RISCV_TEST_SRC := $(if $(wildcard $(LOCAL_RISCV_TEST_SRC)),$(LOCAL_RISCV_TEST_SRC),$(UPSTREAM_RISCV_TEST_SRC))
+RISCV_TEST_DEFINES ?=
 
 # -----------------------------------------------------------------------------
 # CoreMark workload configuration
@@ -118,6 +125,7 @@ help:
 	@echo "  make difftest-riscv-test     Run one riscv-test with NEMU difftest"
 	@echo "  make emu-riscv-test          Run one riscv-test without difftest"
 	@echo "  make parallel-riscv-test     Run TESTS in parallel"
+	@echo "  make emu-interrupt-test      Run the local machine-interrupt directed test"
 	@echo "  make coremark-workload       Build local CoreMark baremetal workload"
 	@echo "  make emu-coremark            Run CoreMark without difftest"
 	@echo ""
@@ -132,6 +140,7 @@ help:
 	@echo ""
 	@echo "Useful variables:"
 	@echo "  TEST=simple ISA_SUITE=rv64ui EMU_MAX_INSTR=200000 EMU_MAX_CYCLES=<empty>"
+	@echo "  INTERRUPT_START=1000 INTERRUPT_LEN=100000 INTERRUPT_CAUSE=11"
 	@echo "  COREMARK_HOME=$(COREMARK_HOME) COREMARK_ITERATIONS=$(COREMARK_ITERATIONS) COREMARK_CPU_HZ=$(COREMARK_CPU_HZ)"
 	@echo "  SIM_UNCACHED_IN_RAM=1       Mark 0x80001000-0x80001fff as uncached for simulation"
 	@echo "  MILL_FORK_XMX=$(MILL_FORK_XMX) MILL_FORK_XSS=$(MILL_FORK_XSS)"
@@ -213,6 +222,7 @@ $(WORKLOAD_ELF): $(RISCV_TEST_ENV)/riscv_test.h $(RISCV_TEST_ENV)/link.ld \
 	@mkdir -p $(@D)
 	$(RISCV_GCC) -march=$(RISCV_ARCH) -mabi=lp64 -mcmodel=medany -static \
 		-nostdlib -nostartfiles \
+		$(RISCV_TEST_DEFINES) \
 		-I$(RISCV_TEST_ENV) \
 		-I$(RISCV_TESTS_HOME)/isa/macros/scalar \
 		-I$(RISCV_TESTS_HOME)/env \
@@ -227,7 +237,7 @@ riscv-test-workload: $(WORKLOAD_ELF) $(WORKLOAD_DISASM)
 
 emu-riscv-test: riscv-test-workload
 	@$(MAKE) emu NO_DIFF=1
-	./build/emu -i $(WORKLOAD_ELF) --no-diff -I $(EMU_MAX_INSTR) $(EMU_CYCLE_FLAG)
+	./build/emu -i $(WORKLOAD_ELF) --no-diff -I $(EMU_MAX_INSTR) $(EMU_CYCLE_FLAG) $(EMU_EXTRA_ARG_FLAG)
 
 difftest-riscv-test: riscv-test-workload nemu-ref
 	@$(MAKE) emu WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF=Nemu
@@ -269,6 +279,15 @@ wave-riscv-test: riscv-test-workload nemu-ref emu-wave
 		echo "disasm: $(WORKLOAD_DISASM)"; \
 		exit $$sim_rc; \
 	fi
+
+emu-interrupt-test:
+	@$(MAKE) emu-riscv-test \
+		TEST=interrupt \
+		RISCV_ARCH=rv64i_zicsr \
+		RISCV_TEST_DEFINES="-DEXPECTED_INTERRUPT_CAUSE=$(INTERRUPT_CAUSE)" \
+		WORKLOAD_ELF="$(NOOP_HOME)/build/workloads/rv64ui-interrupt-cause$(INTERRUPT_CAUSE).elf" \
+		WORKLOAD_DISASM="$(NOOP_HOME)/build/disasm/rv64ui-interrupt-cause$(INTERRUPT_CAUSE).txt" \
+		EMU_EXTRA_ARGS="$(INTERRUPT_EMU_ARGS)"
 
 $(COREMARK_CONFIG): FORCE
 	@mkdir -p $(@D)

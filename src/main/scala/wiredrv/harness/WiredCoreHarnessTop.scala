@@ -9,6 +9,67 @@ import lmss.axi._
 import wiredrv._
 import wiredrv.frontend._
 
+class SimInterruptInjector extends BlackBox with HasBlackBoxInline {
+  val io = IO(new Bundle {
+    val clock = Input(Clock())
+    val reset = Input(Bool())
+    val msip = Output(Bool())
+    val mtip = Output(Bool())
+    val meip = Output(Bool())
+  })
+
+  setInline("SimInterruptInjector.v",
+    """module SimInterruptInjector(
+      |  input         clock,
+      |  input         reset,
+      |  output        msip,
+      |  output        mtip,
+      |  output        meip
+      |);
+      |
+      |reg [63:0] cycle;
+      |reg [63:0] interrupt_start;
+      |reg [63:0] interrupt_len;
+      |reg [31:0] interrupt_source;
+      |reg        interrupt_enable;
+      |
+      |initial begin
+      |  cycle = 64'd0;
+      |  interrupt_start = 64'd0;
+      |  interrupt_len = 64'd1;
+      |  interrupt_source = 32'd11;
+      |  interrupt_enable = 1'b0;
+      |  if ($value$plusargs("interrupt-start=%d", interrupt_start)) begin
+      |    interrupt_enable = 1'b1;
+      |  end
+      |  if (!$value$plusargs("interrupt-len=%d", interrupt_len)) begin
+      |    interrupt_len = 64'd1;
+      |  end
+      |  if (!$value$plusargs("interrupt-source=%d", interrupt_source)) begin
+      |    interrupt_source = 32'd11;
+      |  end
+      |end
+      |
+      |always @(posedge clock) begin
+      |  if (reset) begin
+      |    cycle <= 64'd0;
+      |  end else begin
+      |    cycle <= cycle + 64'd1;
+      |  end
+      |end
+      |
+      |wire interrupt_valid = interrupt_enable &&
+      |  (cycle >= interrupt_start) &&
+      |  (cycle < (interrupt_start + interrupt_len));
+      |
+      |assign msip = interrupt_valid && interrupt_source == 32'd3;
+      |assign mtip = interrupt_valid && interrupt_source == 32'd7;
+      |assign meip = interrupt_valid && interrupt_source == 32'd11;
+      |
+      |endmodule
+      |""".stripMargin)
+}
+
 class AxiDiffMem(axiP: AxiParams)(implicit p: CoreParams) extends Module {
   require(axiP.dataBits > 0 && (axiP.dataBits % 64 == 0 || axiP.dataBits == 32))
 
@@ -140,20 +201,30 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   val d5 = DifftestModule(new DiffArchIntDelayedUpdate, delay = 1, dontCare = true)
 
   val core = Module(new WiredCore)
+  val interruptInjector = Module(new SimInterruptInjector)
   val mem = Module(new AxiDiffMem(AxiSlvParamsCalc(Seq(
     AxiParams(addrBits = p.addrBits, idBits = 4, dataBits = p.outerBusWidth),
     AxiParams(addrBits = p.addrBits, idBits = 4, dataBits = p.outerBusWidth)
   ))))
   val r = RegInit(0.B)
+  val cycleCnt = RegInit(0.U(64.W))
   r := !r
   // core.io.inst.ready := r
   core.io.inst.ready := 1.B
+  interruptInjector.io.clock := clock
+  interruptInjector.io.reset := reset.asBool
+  core.io.hartId := 0.U
+  core.io.msip := interruptInjector.io.msip
+  core.io.mtip := interruptInjector.io.mtip
+  core.io.meip := interruptInjector.io.meip
+  core.io.debug := false.B
+  core.io.time.valid := true.B
+  core.io.time.bits := cycleCnt
   mem.io.axi <> core.io.mem
 
   val commitValid = core.io.diffCommitValid
   val simExit = commitValid && core.io.diffCommitInst === "h0000006b".U
   simExitOut := simExit
-  val cycleCnt = RegInit(0.U(64.W))
   val instrCnt = RegInit(0.U(64.W))
   val instrCntNext = instrCnt + commitValid.asUInt
 
@@ -163,11 +234,11 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   }
 
   d0.coreid := 0.U
-  d0.valid := false.B
-  d0.interrupt := 0.U
-  d0.exception := 0.U
-  d0.exceptionPC := core.io.diffCommitPc
-  d0.exceptionInst := core.io.diffCommitInst
+  d0.valid := core.io.diffTrapValid
+  d0.interrupt := Mux(core.io.diffTrapIsInterrupt, core.io.diffTrapCode(31, 0), 0.U)
+  d0.exception := Mux(core.io.diffTrapIsInterrupt, 0.U, core.io.diffTrapCode(31, 0))
+  d0.exceptionPC := core.io.diffTrapPc
+  d0.exceptionInst := core.io.diffTrapInst
   d0.hasNMI := false.B
   d0.virtualInterruptIsHvictlInject := false.B
   d0.irToHS := false.B
@@ -177,24 +248,24 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   d1.value := core.io.diffRf
 
   d2.coreid := 0.U
-  d2.privilegeMode := 3.U
-  d2.mstatus := 0.U
-  d2.sstatus := 0.U
-  d2.mepc := 0.U
-  d2.sepc := 0.U
-  d2.mtval := 0.U
-  d2.stval := 0.U
-  d2.mtvec := 0.U
-  d2.stvec := 0.U
-  d2.mcause := 0.U
-  d2.scause := 0.U
-  d2.satp := 0.U
-  d2.mip := 0.U
-  d2.mie := 0.U
-  d2.mscratch := 0.U
-  d2.sscratch := 0.U
-  d2.mideleg := 0.U
-  d2.medeleg := 0.U
+  d2.privilegeMode := core.io.diffCsr.privilegeMode
+  d2.mstatus := core.io.diffCsr.mstatus
+  d2.sstatus := core.io.diffCsr.sstatus
+  d2.mepc := core.io.diffCsr.mepc
+  d2.sepc := core.io.diffCsr.sepc
+  d2.mtval := core.io.diffCsr.mtval
+  d2.stval := core.io.diffCsr.stval
+  d2.mtvec := core.io.diffCsr.mtvec
+  d2.stvec := core.io.diffCsr.stvec
+  d2.mcause := core.io.diffCsr.mcause
+  d2.scause := core.io.diffCsr.scause
+  d2.satp := core.io.diffCsr.satp
+  d2.mip := core.io.diffCsr.mip
+  d2.mie := core.io.diffCsr.mie
+  d2.mscratch := core.io.diffCsr.mscratch
+  d2.sscratch := core.io.diffCsr.sscratch
+  d2.mideleg := core.io.diffCsr.mideleg
+  d2.medeleg := core.io.diffCsr.medeleg
 
   d3.coreid := 0.U
   d3.index := 0.U

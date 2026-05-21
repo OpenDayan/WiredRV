@@ -74,6 +74,7 @@ object CsrOp {
   val csrrs = 2.U(width.W)
   val csrrc = 3.U(width.W)
   val ecall = 4.U(width.W)
+  val mret = 5.U(width.W)
 }
 
 object MduOp {
@@ -179,6 +180,7 @@ object RV64IInstructions {
   val CSRRCI = BitPat("b?????????????????111?????1110011")
   val ECALL = BitPat("b00000000000000000000000001110011")
   val EBREAK = BitPat("b00000000000100000000000001110011")
+  val MRET = BitPat("b00110000001000000000000001110011")
 }
 
 object RV64MInstructions {
@@ -301,13 +303,14 @@ object RV64IDecodeTable extends DecodeConstants {
     CBO_INVAL -> RVDecode(src1 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.cboInval).generate(),
     CBO_CLEAN -> RVDecode(src1 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.cboClean).generate(),
     CBO_FLUSH -> RVDecode(src1 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.cboFlush).generate(),
-    CSRRW  -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.csr, fuOp = CsrOp.csrrw, rwen = true).generate(),
-    CSRRS  -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.csr, fuOp = CsrOp.csrrs, rwen = true).generate(),
-    CSRRC  -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.csr, fuOp = CsrOp.csrrc, rwen = true).generate(),
-    CSRRWI -> RVDecode(src1 = SrcType.reg, src2 = SrcType.imm, fu = FuType.csr, fuOp = CsrOp.csrrw, rwen = true, selImm = ImmSel.z).generate(),
-    CSRRSI -> RVDecode(src1 = SrcType.reg, src2 = SrcType.imm, fu = FuType.csr, fuOp = CsrOp.csrrs, rwen = true, selImm = ImmSel.z).generate(),
-    CSRRCI -> RVDecode(src1 = SrcType.reg, src2 = SrcType.imm, fu = FuType.csr, fuOp = CsrOp.csrrc, rwen = true, selImm = ImmSel.z).generate(),
+    CSRRW  -> RVDecode(src1 = SrcType.reg, fu = FuType.csr, fuOp = CsrOp.csrrw, rwen = true).generate(),
+    CSRRS  -> RVDecode(src1 = SrcType.reg, fu = FuType.csr, fuOp = CsrOp.csrrs, rwen = true).generate(),
+    CSRRC  -> RVDecode(src1 = SrcType.reg, fu = FuType.csr, fuOp = CsrOp.csrrc, rwen = true).generate(),
+    CSRRWI -> RVDecode(src2 = SrcType.imm, fu = FuType.csr, fuOp = CsrOp.csrrw, rwen = true, selImm = ImmSel.z).generate(),
+    CSRRSI -> RVDecode(src2 = SrcType.imm, fu = FuType.csr, fuOp = CsrOp.csrrs, rwen = true, selImm = ImmSel.z).generate(),
+    CSRRCI -> RVDecode(src2 = SrcType.imm, fu = FuType.csr, fuOp = CsrOp.csrrc, rwen = true, selImm = ImmSel.z).generate(),
     ECALL  -> RVDecode(fu = FuType.csr, fuOp = CsrOp.ecall, flushPipe = true).generate(),
-    EBREAK -> RVDecode(fu = FuType.csr, fuOp = CsrOp.ecall, flushPipe = true).generate()
+    EBREAK -> RVDecode(fu = FuType.csr, fuOp = CsrOp.ecall, flushPipe = true).generate(),
+    MRET   -> RVDecode(fu = FuType.csr, fuOp = CsrOp.mret, flushPipe = true).generate()
   )
 }
