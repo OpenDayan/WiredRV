@@ -1,6 +1,6 @@
 [submodule "deps/difftest"]
 	path = deps/difftest
-	url = https://github.com/OpenXiangShan-Nanhu/difftest.git
+	url = https://github.com/2107647816-beep/difftest.git
 	branch = rts
 [submodule "deps/riscv-tests"]
 	path = deps/riscv-tests
