@@ -1,9 +1,10 @@
-[submodule "difftest"]
-	path = difftest
-	url = https://git.rvnpu.cn/rvnpu/difftest.git
-[submodule "third_party/riscv-tests"]
-	path = third_party/riscv-tests
+[submodule "deps/difftest"]
+	path = deps/difftest
+	url = https://github.com/OpenXiangShan-Nanhu/difftest.git
+	branch = rts
+[submodule "deps/riscv-tests"]
+	path = deps/riscv-tests
 	url = https://git.rvnpu.cn/rvnpu/riscv-tests.git
-[submodule "third_party/LaomaSubsystem"]
-	path = third_party/LaomaSubsystem
+[submodule "deps/LaomaSubsystem"]
+	path = deps/LaomaSubsystem
 	url = https://git.rvnpu.cn/rvnpu/LaomaSubsystem.git

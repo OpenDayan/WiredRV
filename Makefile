@@ -1,4 +1,4 @@
-.PHONY: help deps compile verilog sim-verilog test emu emu-wave emu-cli cli run-cli clean verilog-clean nemu-ref riscv-test-workload emu-riscv-test difftest-riscv-test parallel-riscv-test wave-riscv-test emu-interrupt-test coremark-workload emu-coremark
+.PHONY: help deps compile gen verilog sim-verilog test emu emu-wave emu-cli cli run-cli clean verilog-clean nemu-ref riscv-test-workload emu-riscv-test difftest-riscv-test parallel-riscv-test wave-riscv-test emu-interrupt-test coremark-workload emu-coremark
 
 # -----------------------------------------------------------------------------
 # Project and tool configuration
@@ -7,10 +7,14 @@ NOOP_HOME ?= $(abspath .)
 export NOOP_HOME
 
 MILL ?= ./mill
-CHISEL_VERSION ?= 6.6.0
+CHISEL_VERSION ?= 7.9.0
 MILL_WIREDRV_TARGET := wiredrv[$(CHISEL_VERSION)]
-SIM_MAIN := wiredrv.harness.WiredCoreHarnessTopMain
+DIFFTEST_DIR ?= $(NOOP_HOME)/deps/difftest
+VERILOG_TOP ?= wiredrv.harness.WiredCoreHarnessTop
+VERILOG_TOP_NAME := $(notdir $(subst .,/,${VERILOG_TOP}))
+RTL_DIR ?= $(NOOP_HOME)/generated/$(VERILOG_TOP_NAME)
 SCALA_TEST_DIR := $(NOOP_HOME)/src/test/scala
+REPL_SEQ_MEM ?= 0
 SIM_UNCACHED_IN_RAM ?= 0
 SIM_UNCACHED_FLAG := $(if $(filter 1 true yes,$(SIM_UNCACHED_IN_RAM)),-Dsim-uncached-in-ram=true,)
 
@@ -22,15 +26,17 @@ export MILL_FORK_XSS
 # -----------------------------------------------------------------------------
 # External dependencies
 # -----------------------------------------------------------------------------
-NEMU_HOME ?= /workspace/NEMU
+NEMU_HOME ?= $(NOOP_HOME)/../NEMU
 export NEMU_HOME
 NEMU_REF_SO ?= $(NEMU_HOME)/build/riscv64-nemu-interpreter-so
+REF ?= Nemu
+DIFFTEST_REF_PROXY := $(if $(filter Nemu,$(REF)),Spike,$(REF))
 
 HOST_RISCV_GCC := $(shell command -v riscv64-unknown-elf-gcc 2>/dev/null)
 RISCV_PREFIX ?= $(if $(HOST_RISCV_GCC),$(patsubst %-gcc,%,$(HOST_RISCV_GCC)),/public/riscv-tools/rv64ima/bin/riscv64-unknown-elf)
 RISCV_GCC ?= $(RISCV_PREFIX)-gcc
 RISCV_OBJDUMP ?= $(RISCV_PREFIX)-objdump
-RISCV_TESTS_HOME ?= $(NOOP_HOME)/third_party/riscv-tests
+RISCV_TESTS_HOME ?= $(NOOP_HOME)/deps/riscv-tests
 RISCV_TEST_ENV ?= $(NOOP_HOME)/tests/riscv-tests/wiredrv
 
 # -----------------------------------------------------------------------------
@@ -116,7 +122,8 @@ help:
 	@echo ""
 	@echo "Chisel/Mill targets:"
 	@echo "  make compile                 Compile Scala/Chisel with Chisel $(CHISEL_VERSION)"
-	@echo "  make verilog                 Generate SystemVerilog into build/rtl"
+	@echo "  make gen                     Generate SystemVerilog into generated/<Top>"
+	@echo "  make verilog                 Alias of make gen"
 	@echo "  make sim-verilog             Alias of make verilog"
 	@echo "  make test                    Run Scala tests when src/test/scala exists"
 	@echo ""
@@ -139,6 +146,10 @@ help:
 	@echo "  make clean                   Remove all generated build outputs"
 	@echo ""
 	@echo "Useful variables:"
+	@echo "  VERILOG_TOP=$(VERILOG_TOP)"
+	@echo "  RTL_DIR=$(RTL_DIR)"
+	@echo "  DIFFTEST_DIR=$(DIFFTEST_DIR)"
+	@echo "  REPL_SEQ_MEM=$(REPL_SEQ_MEM)"
 	@echo "  TEST=simple ISA_SUITE=rv64ui EMU_MAX_INSTR=200000 EMU_MAX_CYCLES=<empty>"
 	@echo "  INTERRUPT_START=1000 INTERRUPT_LEN=100000 INTERRUPT_CAUSE=11"
 	@echo "  COREMARK_HOME=$(COREMARK_HOME) COREMARK_ITERATIONS=$(COREMARK_ITERATIONS) COREMARK_CPU_HZ=$(COREMARK_CPU_HZ)"
@@ -151,8 +162,10 @@ deps:
 compile:
 	$(MILL) '$(MILL_WIREDRV_TARGET).compile'
 
-verilog:
-	$(MILL) $(SIM_UNCACHED_FLAG) '$(MILL_WIREDRV_TARGET).runMain' $(SIM_MAIN)
+gen:
+	$(MILL) $(SIM_UNCACHED_FLAG) -Dtop=$(VERILOG_TOP) -Dtarget-dir=$(RTL_DIR) -Drepl-seq-mem=$(REPL_SEQ_MEM) gen
+
+verilog: gen
 
 sim-verilog: verilog
 
@@ -165,30 +178,34 @@ test:
 	fi
 
 emu: verilog
-	@$(MAKE) -C difftest emu \
+	@rm -rf $(NOOP_HOME)/build/verilator-compile $(NOOP_HOME)/build/emu
+	@$(MAKE) -C $(DIFFTEST_DIR) emu \
+		RTL_DIR="$(RTL_DIR)" \
 		WITH_CHISELDB=$(WITH_CHISELDB) \
 		WITH_CONSTANTIN=$(WITH_CONSTANTIN) \
 		NO_DIFF=$(NO_DIFF) \
-		REF="$(REF)"
+		REF="$(DIFFTEST_REF_PROXY)"
 
 emu-wave: verilog
 	@rm -rf $(NOOP_HOME)/build/verilator-compile $(NOOP_HOME)/build/emu
-	@$(MAKE) -C difftest emu \
+	@$(MAKE) -C $(DIFFTEST_DIR) emu \
+		RTL_DIR="$(RTL_DIR)" \
 		WITH_CHISELDB=0 \
 		WITH_CONSTANTIN=0 \
 		NO_DIFF=$(NO_DIFF) \
-		REF=Nemu \
+		REF="$(DIFFTEST_REF_PROXY)" \
 		EMU_TRACE=fst
 
 EMU_TRACE_FOR_CLI := $(if $(strip $(EMU_TRACE)),$(EMU_TRACE),fst)
 
 emu-cli: verilog
 	@rm -rf $(NOOP_HOME)/build/verilator-compile $(NOOP_HOME)/build/emu
-	@$(MAKE) -C difftest emu \
+	@$(MAKE) -C $(DIFFTEST_DIR) emu \
+		RTL_DIR="$(RTL_DIR)" \
 		WITH_CHISELDB=$(WITH_CHISELDB) \
 		WITH_CONSTANTIN=$(WITH_CONSTANTIN) \
 		NO_DIFF=$(NO_DIFF) \
-		REF="$(REF)" \
+		REF="$(DIFFTEST_REF_PROXY)" \
 		EMU_TRACE=$(EMU_TRACE_FOR_CLI)
 
 cli: nemu-ref riscv-test-workload
@@ -241,7 +258,7 @@ emu-riscv-test: riscv-test-workload
 
 difftest-riscv-test: riscv-test-workload nemu-ref
 	@$(MAKE) emu WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF=Nemu
-	./build/emu -i $(WORKLOAD_ELF) -I $(EMU_MAX_INSTR) $(EMU_CYCLE_FLAG)
+	./build/emu -i $(WORKLOAD_ELF) --diff $(NEMU_REF_SO) -I $(EMU_MAX_INSTR) $(EMU_CYCLE_FLAG)
 
 parallel-riscv-test:
 	@JOBS="$(TEST_JOBS)" \
@@ -313,7 +330,6 @@ emu-coremark: coremark-workload
 	./build/emu -i $(COREMARK_ELF) --no-diff -I $(COREMARK_MAX_INSTR) $(EMU_CYCLE_FLAG)
 
 verilog-clean:
-	rm -rf build/rtl
 	rm -rf generated
 
 clean:

@@ -17,6 +17,7 @@ class WiredCoreIO(implicit p: CoreParams) extends Bundle {
   val mtip = Input(Bool())
   val msip = Input(Bool())
   val meip = Input(Bool())
+  val clusterInterrupt = Input(Bool())
   val debug = Input(Bool())
   val time = Input(Valid(UInt(64.W)))
   val diffCommitValid = Output(Bool())
@@ -37,6 +38,7 @@ class WiredCoreIO(implicit p: CoreParams) extends Bundle {
   val diffTrapCode = Output(UInt(p.xlen.W))
   val diffTrapPc = Output(UInt(p.addrBits.W))
   val diffTrapInst = Output(UInt(32.W))
+  val diffExit = Output(Bool())
   val simUart = Valid(UInt(8.W))
   val frontendPerf = Output(new FrontendPerfCounters)
   val backendPerf = Output(new BackendPerfCounters)
@@ -49,9 +51,8 @@ class WiredCore(implicit p: CoreParams) extends Module {
 
   val frontend = Module(new Frontend)
   val backend = Module(new Backend)
-  val imemToAxi = Module(new BusToAxi(p.innerBusWidth))
+  val imemToAxi = Module(new BusToAxi(p.outerBusWidth))
   val dmemToAxi = Module(new BusToAxi(p.innerBusWidth))
-  val imemWidthUp = Module(new AxiNarrowToWide(innerAxi, outerAxi, buffer = 4))
   val dmemWidthUp = Module(new AxiNarrowToWide(innerAxi, outerAxi, buffer = 4))
   val xbar = Module(new LmssAxiXbar(Seq(outerAxi, outerAxi)))
 
@@ -59,7 +60,7 @@ class WiredCore(implicit p: CoreParams) extends Module {
   backend.io.hartId := io.hartId
   backend.io.mtip := io.mtip
   backend.io.msip := io.msip
-  backend.io.meip := io.meip
+  backend.io.meip := io.meip || io.clusterInterrupt
   backend.io.debug := io.debug
   backend.io.time := io.time
   frontend.io.redirects := backend.io.redirects
@@ -87,16 +88,16 @@ class WiredCore(implicit p: CoreParams) extends Module {
   io.diffTrapCode := backend.io.diffTrapCode
   io.diffTrapPc := backend.io.diffTrapPc
   io.diffTrapInst := backend.io.diffTrapInst
+  io.diffExit := backend.io.diffExit
   io.simUart := backend.io.simUart
   io.frontendPerf := frontend.io.perf
   io.backendPerf := backend.io.perf
 
   imemToAxi.io.in <> frontend.io.bus
   dmemToAxi.io.in <> backend.io.bus
-  imemWidthUp.io.mst <> imemToAxi.io.out
   dmemWidthUp.io.mst <> dmemToAxi.io.out
 
-  xbar.io.upstream(0) <> imemWidthUp.io.slv
+  xbar.io.upstream(0) <> imemToAxi.io.out
   xbar.io.upstream(1) <> dmemWidthUp.io.slv
   io.mem <> xbar.io.downstream.head
 }

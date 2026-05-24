@@ -10,7 +10,7 @@ as a small Makefile wrapper over Mill and the difftest Makefile.
 - `NEMU_HOME` defaults to `/workspace/NEMU`.
 - The RISC-V toolchain prefix defaults to
   `/public/riscv-tools/rv64ima/bin/riscv64-unknown-elf`.
-- The project currently keeps `Chisel 6.6.0 + Mill 0.11.8`.
+- The project currently keeps `Chisel 7.9.0 + Mill 1.0.4`.
 
 ## Recommended Build Flow
 
@@ -20,19 +20,37 @@ Initialize submodules:
 make deps
 ```
 
+External repositories live under `deps/`:
+
+```text
+deps/difftest
+deps/riscv-tests
+deps/LaomaSubsystem
+deps/LaomaSubsystem/rocket-chip
+deps/LaomaSubsystem/xs-utils
+```
+
 Compile Scala/Chisel:
 
 ```bash
 make compile
 ```
 
-Generate SystemVerilog into `build/rtl`:
+Generate SystemVerilog into `generated/WiredCoreHarnessTop`:
 
 ```bash
 make verilog
 ```
 
-`make sim-verilog` is kept as a compatibility alias of `make verilog`.
+`make sim-verilog` is kept as a compatibility alias of `make verilog`. To
+generate a different zero-argument top module, pass its fully qualified class
+name:
+
+```bash
+make gen VERILOG_TOP=wiredrv.Test
+```
+
+Generated RTL directories include `filelist.f` for downstream EDA integration.
 
 Build the Verilator emulator through difftest:
 
@@ -49,7 +67,7 @@ EMU_MAX_CYCLES=500000 make difftest-riscv-test TEST=simple
 ## LaomaSubsystem AXI Dependency
 
 WiredRV uses AXI bundle/type definitions and the fixed `AxiNarrowToWide`
-implementation from the `third_party/LaomaSubsystem` submodule. The submodule
+implementation from the `deps/LaomaSubsystem` submodule. The submodule
 should point at the `dev/axi5` branch commit that contains:
 
 ```text
@@ -61,8 +79,10 @@ removed to avoid conflicts with the Laoma definitions. The active AXI sources
 are compiled from:
 
 ```text
-third_party/LaomaSubsystem/src/main/scala/lmss/axi/package.scala
-third_party/LaomaSubsystem/src/main/scala/lmss/axi/AxiNarrowToWide.scala
+deps/LaomaSubsystem/src/main/scala/lmss/axi/package.scala
+deps/LaomaSubsystem/src/main/scala/lmss/axi/AxiNarrowToWide.scala
+deps/LaomaSubsystem/rocket-chip/dependencies/cde/cde/src
+deps/LaomaSubsystem/xs-utils/src/main/scala/xs/utils
 ```
 
 ## Makefile Targets
@@ -74,16 +94,18 @@ Dependency targets:
 
 Chisel/Mill targets:
 
-- `make compile`: compile `wiredrv[6.6.0]`.
-- `make verilog`: run `wiredrv.harness.WiredCoreHarnessTopMain` and generate
-  RTL into `build/rtl`.
+- `make compile`: compile `wiredrv[7.9.0]`.
+- `make gen`: run the template-style Mill `gen` command and generate RTL into
+  `generated/<Top>`.
+- `make verilog`: compatibility alias of `make gen`.
 - `make sim-verilog`: compatibility alias of `make verilog`.
 - `make test`: run Scala tests if `src/test/scala` exists; otherwise run
   `make compile` and print a notice.
 
 Difftest and emulator targets:
 
-- `make emu`: build the Verilator emulator through `difftest`.
+- `make emu`: build the Verilator emulator through `difftest`, using the RTL in
+  `generated/<Top>`.
 - `make emu-riscv-test`: run one workload without difftest.
 - `make difftest-riscv-test`: run one workload with NEMU difftest.
 - `make parallel-riscv-test`: run the selected `TESTS` list in parallel.
@@ -119,6 +141,23 @@ ERROR: NEMU (1400B) is configured with different states than DUT (408B).
 ```
 
 ## Common Commands
+
+Generate RTL for the default difftest harness:
+
+```bash
+make verilog
+```
+
+Direct Mill entry matching the RVT template flow:
+
+```bash
+./mill -Dtop=wiredrv.harness.WiredCoreHarnessTop gen
+```
+
+Use `generated/WiredCoreHarnessTop/filelist.f` when handing the generated RTL
+to external EDA flows.
+
+Set `REPL_SEQ_MEM=1` to pass `--repl-seq-mem` through the generator.
 
 Build NEMU reference:
 
@@ -249,6 +288,6 @@ fence_i
 List tests with:
 
 ```bash
-cd third_party/riscv-tests/isa/rv64ui
+cd deps/riscv-tests/isa/rv64ui
 printf '%s\n' *.S | sed 's/\.S$//' | sort
 ```

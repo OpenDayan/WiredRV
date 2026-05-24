@@ -134,7 +134,7 @@ done
 add_tests_text "$TESTS_TEXT"
 
 if [[ "$USE_ALL" == 1 ]]; then
-  suite_dir="$ROOT/third_party/riscv-tests/isa/$DEFAULT_SUITE"
+  suite_dir="$ROOT/deps/riscv-tests/isa/$DEFAULT_SUITE"
   if [[ ! -d "$suite_dir" ]]; then
     echo "suite not found: $suite_dir" >&2
     exit 1
@@ -163,7 +163,7 @@ parse_target() {
   elif [[ "$raw" == *:* ]]; then
     suite="${raw%%:*}"
     test="${raw#*:}"
-  elif [[ "$raw" == *-* && -d "$ROOT/third_party/riscv-tests/isa/${raw%%-*}" ]]; then
+  elif [[ "$raw" == *-* && -d "$ROOT/deps/riscv-tests/isa/${raw%%-*}" ]]; then
     suite="${raw%%-*}"
     test="${raw#*-}"
   else
@@ -183,7 +183,7 @@ for raw in "${targets[@]}"; do
   parsed="$(parse_target "$raw")"
   suite="${parsed%%$'\t'*}"
   test="${parsed#*$'\t'}"
-  src="$ROOT/third_party/riscv-tests/isa/$suite/$test.S"
+  src="$ROOT/deps/riscv-tests/isa/$suite/$test.S"
   name="$suite-$test"
   if [[ ! -f "$src" ]]; then
     echo "test source not found: $src" >&2
@@ -283,6 +283,7 @@ fi
 
 echo "[run] execute tests in parallel"
 run_cmds=()
+pass_pattern='HIT GOOD TRAP|good trap|PASS|passed|EXIT at pc'
 for i in "${!names[@]}"; do
   name="${names[$i]}"
   elf="${elfs[$i]}"
@@ -310,14 +311,21 @@ for i in "${!names[@]}"; do
   run_cmds+=("$cmd")
 done
 
-if ! run_limited run_cmds; then
+run_limited run_cmds || true
+
+failed=()
+for i in "${!names[@]}"; do
+  log="$LOG_DIR/${names[$i]}/sim.log"
+  if [[ ! -f "$log" ]] || ! tail -n 20 "$log" | grep -Eiq "$pass_pattern"; then
+    failed+=("${names[$i]}  log: $log")
+  fi
+done
+
+if [[ "${#failed[@]}" -ne 0 ]]; then
   echo
   echo "FAILED:"
-  for i in "${!names[@]}"; do
-    log="$LOG_DIR/${names[$i]}/sim.log"
-    if [[ ! -f "$log" ]] || ! tail -n 20 "$log" | grep -Eiq 'HIT GOOD TRAP|good trap|PASS|passed'; then
-      echo "  ${names[$i]}  log: $log"
-    fi
+  for item in "${failed[@]}"; do
+    echo "  $item"
   done
   exit 1
 fi

@@ -70,6 +70,209 @@ class SimInterruptInjector extends BlackBox with HasBlackBoxInline {
       |""".stripMargin)
 }
 
+class SimPerfPrinter extends BlackBox with HasBlackBoxInline {
+  val io = IO(new Bundle {
+    val clock = Input(Clock())
+    val reset = Input(Bool())
+    val enable = Input(Bool())
+    val exit_pc = Input(UInt(64.W))
+    val exit_code = Input(UInt(64.W))
+
+    val frontend_cycles = Input(UInt(64.W))
+    val frontend_instFire = Input(UInt(64.W))
+    val frontend_backpressure = Input(UInt(64.W))
+    val frontend_frontStall = Input(UInt(64.W))
+    val frontend_fetchQueueFull = Input(UInt(64.W))
+    val frontend_icacheHit = Input(UInt(64.W))
+    val frontend_icacheRefill = Input(UInt(64.W))
+    val frontend_icacheRefillDone = Input(UInt(64.W))
+    val frontend_icacheRefillCycles = Input(UInt(64.W))
+    val frontend_icacheRefillReqStall = Input(UInt(64.W))
+    val frontend_icacheRefillRespWait = Input(UInt(64.W))
+    val frontend_icacheReplay = Input(UInt(64.W))
+    val frontend_respQueueFlush = Input(UInt(64.W))
+    val frontend_icacheMissSetHasValid = Input(UInt(64.W))
+    val frontend_icacheMissSetFull = Input(UInt(64.W))
+    val frontend_jalPred = Input(UInt(64.W))
+    val frontend_branchPred = Input(UInt(64.W))
+    val frontend_ifencei = Input(UInt(64.W))
+    val frontend_backendRedirect = Input(UInt(64.W))
+
+    val backend_cycles = Input(UInt(64.W))
+    val backend_commits = Input(UInt(64.W))
+    val backend_dStall = Input(UInt(64.W))
+    val backend_dRs1VarHaz = Input(UInt(64.W))
+    val backend_dRs2VarHaz = Input(UInt(64.W))
+    val backend_dRdVarHaz = Input(UInt(64.W))
+    val backend_dERawHaz = Input(UInt(64.W))
+    val backend_dWRawHaz = Input(UInt(64.W))
+    val backend_dLsuBaseNotReady = Input(UInt(64.W))
+    val backend_dJrNotReady = Input(UInt(64.W))
+    val backend_dNoVslot = Input(UInt(64.W))
+    val backend_dDivResourceBusy = Input(UInt(64.W))
+    val backend_dCacheBusy = Input(UInt(64.W))
+    val backend_dUncachedBusy = Input(UInt(64.W))
+    val backend_dStoreQueueWait = Input(UInt(64.W))
+    val backend_dInflightStoreWait = Input(UInt(64.W))
+    val backend_dFenceWait = Input(UInt(64.W))
+    val backend_dMisalignedWait = Input(UInt(64.W))
+    val backend_dNemuTrapWait = Input(UInt(64.W))
+    val backend_loadCommit = Input(UInt(64.W))
+    val backend_storeCommit = Input(UInt(64.W))
+    val backend_jumpCommit = Input(UInt(64.W))
+    val backend_branchCommit = Input(UInt(64.W))
+    val backend_branchRedirect = Input(UInt(64.W))
+    val backend_dcacheLoadHit = Input(UInt(64.W))
+    val backend_dcacheStoreHit = Input(UInt(64.W))
+    val backend_dcacheMiss = Input(UInt(64.W))
+    val backend_dcacheMissLoad = Input(UInt(64.W))
+    val backend_dcacheMissStore = Input(UInt(64.W))
+    val backend_dcacheRefillCycles = Input(UInt(64.W))
+    val backend_dcacheRefillRespWait = Input(UInt(64.W))
+    val backend_dcacheVictimWriteback = Input(UInt(64.W))
+    val backend_dcacheVictimWritebackCycles = Input(UInt(64.W))
+    val backend_cmoStart = Input(UInt(64.W))
+    val backend_cmoCycles = Input(UInt(64.W))
+    val backend_storeQueueEnq = Input(UInt(64.W))
+    val backend_storeQueueDrain = Input(UInt(64.W))
+    val backend_storeQueueFullCycles = Input(UInt(64.W))
+    val backend_storeQueueOneEntryCycles = Input(UInt(64.W))
+    val backend_uncachedAccess = Input(UInt(64.W))
+    val backend_uncachedCycles = Input(UInt(64.W))
+    val backend_dBusAWait = Input(UInt(64.W))
+    val backend_dBusDWait = Input(UInt(64.W))
+    val backend_mulStart = Input(UInt(64.W))
+    val backend_divStart = Input(UInt(64.W))
+    val backend_divBusyCycles = Input(UInt(64.W))
+  })
+
+  setInline("SimPerfPrinter.v",
+    """module SimPerfPrinter(
+      |  input         clock,
+      |  input         reset,
+      |  input         enable,
+      |  input  [63:0] exit_pc,
+      |  input  [63:0] exit_code,
+      |
+      |  input  [63:0] frontend_cycles,
+      |  input  [63:0] frontend_instFire,
+      |  input  [63:0] frontend_backpressure,
+      |  input  [63:0] frontend_frontStall,
+      |  input  [63:0] frontend_fetchQueueFull,
+      |  input  [63:0] frontend_icacheHit,
+      |  input  [63:0] frontend_icacheRefill,
+      |  input  [63:0] frontend_icacheRefillDone,
+      |  input  [63:0] frontend_icacheRefillCycles,
+      |  input  [63:0] frontend_icacheRefillReqStall,
+      |  input  [63:0] frontend_icacheRefillRespWait,
+      |  input  [63:0] frontend_icacheReplay,
+      |  input  [63:0] frontend_respQueueFlush,
+      |  input  [63:0] frontend_icacheMissSetHasValid,
+      |  input  [63:0] frontend_icacheMissSetFull,
+      |  input  [63:0] frontend_jalPred,
+      |  input  [63:0] frontend_branchPred,
+      |  input  [63:0] frontend_ifencei,
+      |  input  [63:0] frontend_backendRedirect,
+      |
+      |  input  [63:0] backend_cycles,
+      |  input  [63:0] backend_commits,
+      |  input  [63:0] backend_dStall,
+      |  input  [63:0] backend_dRs1VarHaz,
+      |  input  [63:0] backend_dRs2VarHaz,
+      |  input  [63:0] backend_dRdVarHaz,
+      |  input  [63:0] backend_dERawHaz,
+      |  input  [63:0] backend_dWRawHaz,
+      |  input  [63:0] backend_dLsuBaseNotReady,
+      |  input  [63:0] backend_dJrNotReady,
+      |  input  [63:0] backend_dNoVslot,
+      |  input  [63:0] backend_dDivResourceBusy,
+      |  input  [63:0] backend_dCacheBusy,
+      |  input  [63:0] backend_dUncachedBusy,
+      |  input  [63:0] backend_dStoreQueueWait,
+      |  input  [63:0] backend_dInflightStoreWait,
+      |  input  [63:0] backend_dFenceWait,
+      |  input  [63:0] backend_dMisalignedWait,
+      |  input  [63:0] backend_dNemuTrapWait,
+      |  input  [63:0] backend_loadCommit,
+      |  input  [63:0] backend_storeCommit,
+      |  input  [63:0] backend_jumpCommit,
+      |  input  [63:0] backend_branchCommit,
+      |  input  [63:0] backend_branchRedirect,
+      |  input  [63:0] backend_dcacheLoadHit,
+      |  input  [63:0] backend_dcacheStoreHit,
+      |  input  [63:0] backend_dcacheMiss,
+      |  input  [63:0] backend_dcacheMissLoad,
+      |  input  [63:0] backend_dcacheMissStore,
+      |  input  [63:0] backend_dcacheRefillCycles,
+      |  input  [63:0] backend_dcacheRefillRespWait,
+      |  input  [63:0] backend_dcacheVictimWriteback,
+      |  input  [63:0] backend_dcacheVictimWritebackCycles,
+      |  input  [63:0] backend_cmoStart,
+      |  input  [63:0] backend_cmoCycles,
+      |  input  [63:0] backend_storeQueueEnq,
+      |  input  [63:0] backend_storeQueueDrain,
+      |  input  [63:0] backend_storeQueueFullCycles,
+      |  input  [63:0] backend_storeQueueOneEntryCycles,
+      |  input  [63:0] backend_uncachedAccess,
+      |  input  [63:0] backend_uncachedCycles,
+      |  input  [63:0] backend_dBusAWait,
+      |  input  [63:0] backend_dBusDWait,
+      |  input  [63:0] backend_mulStart,
+      |  input  [63:0] backend_divStart,
+      |  input  [63:0] backend_divBusyCycles
+      |);
+      |
+      |reg printed;
+      |
+      |always @(posedge clock) begin
+      |  if (reset) begin
+      |    printed <= 1'b0;
+      |  end else if (enable && !printed) begin
+      |    printed <= 1'b1;
+      |    $display("EXIT at pc = 0x%0x", exit_pc);
+      |    if (exit_code == 64'd0) begin
+      |      $display("HIT GOOD TRAP");
+      |    end else begin
+      |      $display("HIT BAD TRAP code = 0x%0x", exit_code);
+      |    end
+      |    $display("[perf] frontend cycles=%0d instFire=%0d backpressure=%0d icacheRefill=%0d icacheRefillCycles=%0d backendRedirect=%0d",
+      |      frontend_cycles, frontend_instFire, frontend_backpressure, frontend_icacheRefill,
+      |      frontend_icacheRefillCycles, frontend_backendRedirect);
+      |    $display("[perf] frontend-detail frontStall=%0d fetchQueueFull=%0d refillReqStall=%0d refillRespWait=%0d respQueueFlush=%0d",
+      |      frontend_frontStall, frontend_fetchQueueFull, frontend_icacheRefillReqStall,
+      |      frontend_icacheRefillRespWait, frontend_respQueueFlush);
+      |    $display("[perf] icache hit=%0d refillDone=%0d replay=%0d missSetHasValid=%0d missSetFull=%0d jalPred=%0d branchPred=%0d ifencei=%0d",
+      |      frontend_icacheHit, frontend_icacheRefillDone, frontend_icacheReplay,
+      |      frontend_icacheMissSetHasValid, frontend_icacheMissSetFull, frontend_jalPred,
+      |      frontend_branchPred, frontend_ifencei);
+      |    $display("[perf] backend cycles=%0d commits=%0d dStall=%0d branchRedirect=%0d dcacheMiss=%0d uncachedAccess=%0d mulStart=%0d divStart=%0d",
+      |      backend_cycles, backend_commits, backend_dStall, backend_branchRedirect, backend_dcacheMiss,
+      |      backend_uncachedAccess, backend_mulStart, backend_divStart);
+      |    $display("[perf] commit load=%0d store=%0d branch=%0d jump=%0d dcacheLoadHit=%0d dcacheStoreHit=%0d missLoad=%0d missStore=%0d",
+      |      backend_loadCommit, backend_storeCommit, backend_branchCommit, backend_jumpCommit,
+      |      backend_dcacheLoadHit, backend_dcacheStoreHit, backend_dcacheMissLoad, backend_dcacheMissStore);
+      |    $display("[perf] stall rs1Var=%0d rs2Var=%0d rdVar=%0d lsuBase=%0d jr=%0d noVslot=%0d divBusy=%0d cacheBusy=%0d uncachedBusy=%0d",
+      |      backend_dRs1VarHaz, backend_dRs2VarHaz, backend_dRdVarHaz, backend_dLsuBaseNotReady,
+      |      backend_dJrNotReady, backend_dNoVslot, backend_dDivResourceBusy, backend_dCacheBusy,
+      |      backend_dUncachedBusy);
+      |    $display("[perf] stall-detail eRaw=%0d wRaw=%0d sqWait=%0d inflightStore=%0d fence=%0d misaligned=%0d trapWait=%0d",
+      |      backend_dERawHaz, backend_dWRawHaz, backend_dStoreQueueWait, backend_dInflightStoreWait,
+      |      backend_dFenceWait, backend_dMisalignedWait, backend_dNemuTrapWait);
+      |    $display("[perf] dcache refillCycles=%0d refillRespWait=%0d victimWriteback=%0d victimWritebackCycles=%0d cmoStart=%0d cmoCycles=%0d",
+      |      backend_dcacheRefillCycles, backend_dcacheRefillRespWait, backend_dcacheVictimWriteback,
+      |      backend_dcacheVictimWritebackCycles, backend_cmoStart, backend_cmoCycles);
+      |    $display("[perf] storeq enq=%0d drain=%0d oneEntryCycles=%0d fullCycles=%0d uncachedCycles=%0d dBusAWait=%0d dBusDWait=%0d divBusyCycles=%0d",
+      |      backend_storeQueueEnq, backend_storeQueueDrain, backend_storeQueueOneEntryCycles,
+      |      backend_storeQueueFullCycles, backend_uncachedCycles, backend_dBusAWait,
+      |      backend_dBusDWait, backend_divBusyCycles);
+      |    $fflush();
+      |  end
+      |end
+      |
+      |endmodule
+      |""".stripMargin)
+}
+
 class AxiDiffMem(axiP: AxiParams)(implicit p: CoreParams) extends Module {
   require(axiP.dataBits > 0 && (axiP.dataBits % 64 == 0 || axiP.dataBits == 32))
 
@@ -77,13 +280,15 @@ class AxiDiffMem(axiP: AxiParams)(implicit p: CoreParams) extends Module {
     val axi = Flipped(new AxiBundle(axiP))
   })
 
-  private val lanes = if (axiP.dataBits <= 64) 1 else axiP.dataBits / 64
+  require(axiP.dataBits <= 256, "rts difftest memory supports accesses within one 256-bit beat")
   private val beatBytes = axiP.dataBits / 8
   private val memBase = p.cachedRegions.head.base.U(p.addrBits.W)
+  private val memTop = (p.cachedRegions.head.base + p.cachedRegions.head.size).U(p.addrBits.W)
   private val memBytes = p.cachedRegions.head.size
-  private val mem = DifftestMem(memBytes, 8, 8, lanes, lanes)
+  private val mem = DifftestMem(memBytes, 32, 8, singlePort = false)
 
-  def memIndex(addr: UInt): UInt = (addr - memBase) >> 3
+  def memIndex(addr: UInt): UInt = (addr - memBase) >> 5
+  def inMem(addr: UInt): Bool = addr >= memBase && addr < memTop
   def beatStep(size: UInt): UInt = (1.U(p.addrBits.W) << size)
 
   val wAwValid = RegInit(false.B)
@@ -112,14 +317,21 @@ class AxiDiffMem(axiP: AxiParams)(implicit p: CoreParams) extends Module {
   val writeData = Mux(wDataValid, wData, io.axi.w.bits)
   val writeFire = !wBValid && writeAwValid && writeDataValid
   val writeAlignedAddr = Cat(writeAw.addr(p.addrBits - 1, log2Ceil(beatBytes)), 0.U(log2Ceil(beatBytes).W))
+  val writeInMem = inMem(writeAlignedAddr)
   val writeBytes = writeData.data.asTypeOf(Vec(axiP.dataBits / 8, UInt(8.W)))
+  val writeByteOffset = writeAlignedAddr(4, 0)
+  val writeDataBeat = Wire(Vec(32, UInt(8.W)))
+  val writeMaskBeat = Wire(Vec(32, Bool()))
 
-  for (i <- 0 until lanes) {
-    mem.write(i).valid := writeFire
-    mem.write(i).index := memIndex(writeAlignedAddr + (i * 8).U)
-    mem.write(i).data := VecInit((0 until 8).map(j => writeBytes(i * 8 + j))).asTypeOf(mem.write(i).data)
-    mem.write(i).mask := VecInit((0 until 8).map(j => Fill(8, writeData.strb(i * 8 + j)))).asTypeOf(mem.write(i).mask)
+  for (i <- 0 until 32) {
+    val hits = (0 until beatBytes).map(j => writeByteOffset + j.U === i.U)
+    writeDataBeat(i) := MuxCase(0.U(8.W), hits.zip((0 until beatBytes).map(j => writeBytes(j))))
+    writeMaskBeat(i) := MuxCase(false.B, hits.zip((0 until beatBytes).map(j => writeData.strb(j))))
   }
+  mem.write.valid := writeFire && writeInMem
+  mem.write.index := memIndex(writeAlignedAddr)
+  mem.write.data := writeDataBeat.asTypeOf(mem.write.data)
+  mem.write.mask := VecInit(writeMaskBeat.map(Fill(8, _))).asTypeOf(mem.write.mask)
 
   when(writeFire) {
     wAwValid := false.B
@@ -159,13 +371,18 @@ class AxiDiffMem(axiP: AxiParams)(implicit p: CoreParams) extends Module {
   }
 
   val nextReadAddr = rAddr + beatStep(rSize)
-  val readAddr = Mux(rState === rResp && io.axi.r.fire && rLenLeft =/= 0.U, nextReadAddr, rAddr)
-  val alignedAddr = Cat(readAddr(p.addrBits - 1, log2Ceil(beatBytes)), 0.U(log2Ceil(beatBytes).W))
-  val readDataLanes = Wire(Vec(lanes, UInt(64.W)))
-  for (i <- 0 until lanes) {
-    readDataLanes(i) := mem.readAndHold(memIndex(alignedAddr + (i * 8).U), rState === rWait || rState === rResp).asUInt
+  val readReqAddr = Mux(rState === rResp && io.axi.r.fire && rLenLeft =/= 0.U, nextReadAddr, rAddr)
+  val readReqAlignedAddr = Cat(readReqAddr(p.addrBits - 1, log2Ceil(beatBytes)), 0.U(log2Ceil(beatBytes).W))
+  val readReqInMem = inMem(readReqAlignedAddr)
+  val respAlignedAddr = Cat(rAddr(p.addrBits - 1, log2Ceil(beatBytes)), 0.U(log2Ceil(beatBytes).W))
+  val respInMem = inMem(respAlignedAddr)
+  val readByteOffset = respAlignedAddr(4, 0)
+  val readBytes = mem.readAndHold(memIndex(readReqAlignedAddr), (rState === rWait || rState === rResp) && readReqInMem)
+  val readDataBytes = Wire(Vec(beatBytes, UInt(8.W)))
+  for (i <- 0 until beatBytes) {
+    readDataBytes(i) := Mux(respInMem, readBytes(readByteOffset + i.U), 0.U)
   }
-  val readDataWide = Cat((lanes - 1 to 0 by -1).map(readDataLanes(_)))
+  val readDataWide = Cat((beatBytes - 1 to 0 by -1).map(readDataBytes(_)))
 
   io.axi.r.valid := rState === rResp
   io.axi.r.bits.id := rId
@@ -184,21 +401,23 @@ class AxiDiffMem(axiP: AxiParams)(implicit p: CoreParams) extends Module {
   }
 }
 
-class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTestInterfaces {
+class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
 
   val io = IO(new Bundle {
     val inst = Valid(UInt(32.W))
     val pc = UInt(p.addrBits.W)
+    val clusterInterrupt = Input(Bool())
   })
   val uart = IO(new UARTIO)
   val simExitOut = IO(Output(Bool()))
 
   val d0 = DifftestModule(new DiffArchEvent, delay = 1, dontCare = true)
-  val d1 = DifftestModule(new DiffPhyIntRegState(32), delay = 1, dontCare = true)
+  val d1 = DifftestModule(new DiffArchIntRegState, delay = 1, dontCare = true)
   val d2 = DifftestModule(new DiffCSRState, delay = 1, dontCare = true)
   val d3 = DifftestModule(new DiffInstrCommit, delay = 1, dontCare = true)
   val d4 = DifftestModule(new DiffTrapEvent, delay = 1, dontCare = true)
   val d5 = DifftestModule(new DiffArchIntDelayedUpdate, delay = 1, dontCare = true)
+  val d6 = DifftestModule(new DiffArchFpRegState, delay = 1, dontCare = true)
 
   val core = Module(new WiredCore)
   val interruptInjector = Module(new SimInterruptInjector)
@@ -217,20 +436,28 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   core.io.msip := interruptInjector.io.msip
   core.io.mtip := interruptInjector.io.mtip
   core.io.meip := interruptInjector.io.meip
+  core.io.clusterInterrupt := io.clusterInterrupt
   core.io.debug := false.B
   core.io.time.valid := true.B
   core.io.time.bits := cycleCnt
   mem.io.axi <> core.io.mem
 
   val commitValid = core.io.diffCommitValid
-  val simExit = commitValid && core.io.diffCommitInst === "h0000006b".U
-  simExitOut := simExit
+  val simExit = core.io.diffExit
+  val simExitDelayed = RegInit(false.B)
+  when(simExit) {
+    simExitDelayed := true.B
+  }
+  simExitOut := simExitDelayed
   val instrCnt = RegInit(0.U(64.W))
   val instrCntNext = instrCnt + commitValid.asUInt
+  val lastCommitPc = RegInit(0.U(p.addrBits.W))
+  val trapReportPc = Mux(commitValid, core.io.diffCommitPc, lastCommitPc)
 
   cycleCnt := cycleCnt + 1.U
   when(commitValid) {
     instrCnt := instrCntNext
+    lastCommitPc := core.io.diffCommitPc
   }
 
   d0.coreid := 0.U
@@ -278,7 +505,8 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   d3.v0wen := false.B
   d3.wpdest := core.io.diffCommitRd
   d3.wdest := core.io.diffCommitRd
-  d3.otherwpdest := VecInit(Seq.fill(16)(0.U(d3.wpdest.getWidth.W)))
+  d3.otherwpdest := VecInit(Seq.fill(8)(0.U(8.W)))
+  d3.otherV0Wen := VecInit(Seq.fill(8)(false.B))
   d3.pc := core.io.diffCommitPc
   d3.instr := core.io.diffCommitInst
   d3.robIdx := 0.U
@@ -295,45 +523,79 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   d4.instrCnt := instrCntNext
   d4.hasWFI := false.B
   d4.code := core.io.diffRf(10)
-  d4.pc := core.io.diffCommitPc
+  d4.pc := trapReportPc
 
-  when(simExit) {
-    printf("[perf] frontend cycles=%d instFire=%d backpressure=%d icacheRefill=%d icacheRefillCycles=%d backendRedirect=%d\n",
-      core.io.frontendPerf.cycles,
-      core.io.frontendPerf.instFire,
-      core.io.frontendPerf.backpressure,
-      core.io.frontendPerf.icacheRefill,
-      core.io.frontendPerf.icacheRefillCycles,
-      core.io.frontendPerf.backendRedirect)
-    printf("[perf] icache hit=%d refillDone=%d replay=%d missSetHasValid=%d missSetFull=%d jalPred=%d branchPred=%d ifencei=%d\n",
-      core.io.frontendPerf.icacheHit,
-      core.io.frontendPerf.icacheRefillDone,
-      core.io.frontendPerf.icacheReplay,
-      core.io.frontendPerf.icacheMissSetHasValid,
-      core.io.frontendPerf.icacheMissSetFull,
-      core.io.frontendPerf.jalPred,
-      core.io.frontendPerf.branchPred,
-      core.io.frontendPerf.ifencei)
-    printf("[perf] backend cycles=%d commits=%d dStall=%d branchRedirect=%d dcacheMiss=%d uncachedAccess=%d mulStart=%d divStart=%d\n",
-      core.io.backendPerf.cycles,
-      core.io.backendPerf.commits,
-      core.io.backendPerf.dStall,
-      core.io.backendPerf.branchRedirect,
-      core.io.backendPerf.dcacheMiss,
-      core.io.backendPerf.uncachedAccess,
-      core.io.backendPerf.mulStart,
-      core.io.backendPerf.divStart)
-    printf("[perf] stall rs1Var=%d rs2Var=%d rdVar=%d lsuBase=%d jr=%d noVslot=%d divBusy=%d cacheBusy=%d uncachedBusy=%d\n",
-      core.io.backendPerf.dRs1VarHaz,
-      core.io.backendPerf.dRs2VarHaz,
-      core.io.backendPerf.dRdVarHaz,
-      core.io.backendPerf.dLsuBaseNotReady,
-      core.io.backendPerf.dJrNotReady,
-      core.io.backendPerf.dNoVslot,
-      core.io.backendPerf.dDivResourceBusy,
-      core.io.backendPerf.dCacheBusy,
-      core.io.backendPerf.dUncachedBusy)
-  }
+  val perfPrinter = Module(new SimPerfPrinter)
+  perfPrinter.io.clock := clock
+  perfPrinter.io.reset := reset.asBool
+  perfPrinter.io.enable := simExit
+  perfPrinter.io.exit_pc := Cat(0.U((64 - p.addrBits).W), trapReportPc)
+  perfPrinter.io.exit_code := core.io.diffRf(10)
+  perfPrinter.io.frontend_cycles := core.io.frontendPerf.cycles
+  perfPrinter.io.frontend_instFire := core.io.frontendPerf.instFire
+  perfPrinter.io.frontend_backpressure := core.io.frontendPerf.backpressure
+  perfPrinter.io.frontend_frontStall := core.io.frontendPerf.frontStall
+  perfPrinter.io.frontend_fetchQueueFull := core.io.frontendPerf.fetchQueueFull
+  perfPrinter.io.frontend_icacheHit := core.io.frontendPerf.icacheHit
+  perfPrinter.io.frontend_icacheRefill := core.io.frontendPerf.icacheRefill
+  perfPrinter.io.frontend_icacheRefillDone := core.io.frontendPerf.icacheRefillDone
+  perfPrinter.io.frontend_icacheRefillCycles := core.io.frontendPerf.icacheRefillCycles
+  perfPrinter.io.frontend_icacheRefillReqStall := core.io.frontendPerf.icacheRefillReqStall
+  perfPrinter.io.frontend_icacheRefillRespWait := core.io.frontendPerf.icacheRefillRespWait
+  perfPrinter.io.frontend_icacheReplay := core.io.frontendPerf.icacheReplay
+  perfPrinter.io.frontend_respQueueFlush := core.io.frontendPerf.respQueueFlush
+  perfPrinter.io.frontend_icacheMissSetHasValid := core.io.frontendPerf.icacheMissSetHasValid
+  perfPrinter.io.frontend_icacheMissSetFull := core.io.frontendPerf.icacheMissSetFull
+  perfPrinter.io.frontend_jalPred := core.io.frontendPerf.jalPred
+  perfPrinter.io.frontend_branchPred := core.io.frontendPerf.branchPred
+  perfPrinter.io.frontend_ifencei := core.io.frontendPerf.ifencei
+  perfPrinter.io.frontend_backendRedirect := core.io.frontendPerf.backendRedirect
+  perfPrinter.io.backend_cycles := core.io.backendPerf.cycles
+  perfPrinter.io.backend_commits := core.io.backendPerf.commits
+  perfPrinter.io.backend_dStall := core.io.backendPerf.dStall
+  perfPrinter.io.backend_dRs1VarHaz := core.io.backendPerf.dRs1VarHaz
+  perfPrinter.io.backend_dRs2VarHaz := core.io.backendPerf.dRs2VarHaz
+  perfPrinter.io.backend_dRdVarHaz := core.io.backendPerf.dRdVarHaz
+  perfPrinter.io.backend_dERawHaz := core.io.backendPerf.dERawHaz
+  perfPrinter.io.backend_dWRawHaz := core.io.backendPerf.dWRawHaz
+  perfPrinter.io.backend_dLsuBaseNotReady := core.io.backendPerf.dLsuBaseNotReady
+  perfPrinter.io.backend_dJrNotReady := core.io.backendPerf.dJrNotReady
+  perfPrinter.io.backend_dNoVslot := core.io.backendPerf.dNoVslot
+  perfPrinter.io.backend_dDivResourceBusy := core.io.backendPerf.dDivResourceBusy
+  perfPrinter.io.backend_dCacheBusy := core.io.backendPerf.dCacheBusy
+  perfPrinter.io.backend_dUncachedBusy := core.io.backendPerf.dUncachedBusy
+  perfPrinter.io.backend_dStoreQueueWait := core.io.backendPerf.dStoreQueueWait
+  perfPrinter.io.backend_dInflightStoreWait := core.io.backendPerf.dInflightStoreWait
+  perfPrinter.io.backend_dFenceWait := core.io.backendPerf.dFenceWait
+  perfPrinter.io.backend_dMisalignedWait := core.io.backendPerf.dMisalignedWait
+  perfPrinter.io.backend_dNemuTrapWait := core.io.backendPerf.dNemuTrapWait
+  perfPrinter.io.backend_loadCommit := core.io.backendPerf.loadCommit
+  perfPrinter.io.backend_storeCommit := core.io.backendPerf.storeCommit
+  perfPrinter.io.backend_jumpCommit := core.io.backendPerf.jumpCommit
+  perfPrinter.io.backend_branchCommit := core.io.backendPerf.branchCommit
+  perfPrinter.io.backend_branchRedirect := core.io.backendPerf.branchRedirect
+  perfPrinter.io.backend_dcacheLoadHit := core.io.backendPerf.dcacheLoadHit
+  perfPrinter.io.backend_dcacheStoreHit := core.io.backendPerf.dcacheStoreHit
+  perfPrinter.io.backend_dcacheMiss := core.io.backendPerf.dcacheMiss
+  perfPrinter.io.backend_dcacheMissLoad := core.io.backendPerf.dcacheMissLoad
+  perfPrinter.io.backend_dcacheMissStore := core.io.backendPerf.dcacheMissStore
+  perfPrinter.io.backend_dcacheRefillCycles := core.io.backendPerf.dcacheRefillCycles
+  perfPrinter.io.backend_dcacheRefillRespWait := core.io.backendPerf.dcacheRefillRespWait
+  perfPrinter.io.backend_dcacheVictimWriteback := core.io.backendPerf.dcacheVictimWriteback
+  perfPrinter.io.backend_dcacheVictimWritebackCycles := core.io.backendPerf.dcacheVictimWritebackCycles
+  perfPrinter.io.backend_cmoStart := core.io.backendPerf.cmoStart
+  perfPrinter.io.backend_cmoCycles := core.io.backendPerf.cmoCycles
+  perfPrinter.io.backend_storeQueueEnq := core.io.backendPerf.storeQueueEnq
+  perfPrinter.io.backend_storeQueueDrain := core.io.backendPerf.storeQueueDrain
+  perfPrinter.io.backend_storeQueueFullCycles := core.io.backendPerf.storeQueueFullCycles
+  perfPrinter.io.backend_storeQueueOneEntryCycles := core.io.backendPerf.storeQueueOneEntryCycles
+  perfPrinter.io.backend_uncachedAccess := core.io.backendPerf.uncachedAccess
+  perfPrinter.io.backend_uncachedCycles := core.io.backendPerf.uncachedCycles
+  perfPrinter.io.backend_dBusAWait := core.io.backendPerf.dBusAWait
+  perfPrinter.io.backend_dBusDWait := core.io.backendPerf.dBusDWait
+  perfPrinter.io.backend_mulStart := core.io.backendPerf.mulStart
+  perfPrinter.io.backend_divStart := core.io.backendPerf.divStart
+  perfPrinter.io.backend_divBusyCycles := core.io.backendPerf.divBusyCycles
 
   d5.coreid := 0.U
   d5.index := 0.U
@@ -341,6 +603,9 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   d5.address := core.io.diffDelayedWbRd
   d5.data := core.io.diffDelayedWbData
   d5.nack := false.B
+
+  d6.coreid := 0.U
+  d6.value := VecInit(Seq.fill(32)(0.U(64.W)))
 
   io.pc := core.io.inst.bits.pc
   io.inst.valid := core.io.inst.fire
@@ -350,10 +615,15 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module with HasDiffTes
   uart.out.ch := core.io.simUart.bits
   uart.in.valid := false.B
 
-  override def connectTopIOs(difftest: DifftestTopIO): Unit = {
-    difftest.exit := Mux(simExitOut, Fill(64, 1.U), 0.U)
-    difftest.uart <> uart
-  }
+}
+
+class SimTop(implicit p: CoreParams) extends Module {
+  val dut = Module(new WiredCoreHarnessTop)
+  val difftest = DifftestModule.finish("WiredCoreHarnessTop")
+
+  dut.io.clusterInterrupt := false.B
+  difftest.exit := Mux(dut.simExitOut, Fill(64, 1.U), 0.U)
+  difftest.uart <> dut.uart
 }
 
 object WiredCoreHarnessTopMain extends App {
@@ -373,7 +643,7 @@ object WiredCoreHarnessTopMain extends App {
     }
   }
   ChiselStage.emitSystemVerilog(
-    DifftestModule.top(new WiredCoreHarnessTop()),
+    new SimTop(),
     firtoolOpts = Array(
       "--mlir-disable-threading",
       "-strip-debug-info",

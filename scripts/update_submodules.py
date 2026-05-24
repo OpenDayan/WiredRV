@@ -6,15 +6,15 @@ import subprocess
 
 SUBMODULES_MAP = {
     ".": [
-        "difftest",
-        "third_party/riscv-tests",
-        "third_party/LaomaSubsystem",
+        "deps/difftest",
+        "deps/riscv-tests",
+        "deps/LaomaSubsystem",
     ],
-    "third_party/LaomaSubsystem": [
+    "deps/LaomaSubsystem": [
         "rocket-chip",
         "xs-utils",
     ],
-    "third_party/LaomaSubsystem/rocket-chip": [
+    "deps/LaomaSubsystem/rocket-chip": [
         "dependencies/cde",
         "dependencies/diplomacy",
         "dependencies/hardfloat",

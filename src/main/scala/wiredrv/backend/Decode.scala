@@ -32,6 +32,7 @@ class DecodedInst(implicit p: CoreParams) extends Bundle {
   val rd = UInt(5.W)
   val imm = UInt(p.xlen.W)
   val csrAddr = UInt(12.W)
+  val exceptionValid = Bool()
   val exceptionCode = UInt(16.W)
   val isUncached = Bool()
 }
@@ -86,6 +87,7 @@ class Decode(implicit p: CoreParams) extends Module {
   val isEcall = inst === RV64IInstructions.ECALL.value.U
   val isEbreak = inst === RV64IInstructions.EBREAK.value.U
   val exceptionCode = Mux(isEcall, 11.U, Mux(isEbreak, 3.U, Mux(info.illegal, 2.U, 0.U)))
+  val exceptionValid = isEcall || isEbreak || info.illegal
 
   io.out := 0.U.asTypeOf(new DecodedInst)
   io.out.inst := inst
@@ -95,6 +97,7 @@ class Decode(implicit p: CoreParams) extends Module {
   io.out.rd := inst(11, 7)
   io.out.imm := imm
   io.out.csrAddr := inst(31, 20)
+  io.out.exceptionValid := exceptionValid
   io.out.exceptionCode := exceptionCode
   io.out.isUncached := false.B
 }
