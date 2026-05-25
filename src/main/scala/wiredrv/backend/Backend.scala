@@ -116,6 +116,9 @@ class BackendPerfCounters extends Bundle {
   val uncachedCycles = UInt(64.W)
   val dBusAWait = UInt(64.W)
   val dBusDWait = UInt(64.W)
+  val dBusDWaitRefill = UInt(64.W)
+  val dBusDWaitWriteThrough = UInt(64.W)
+  val dBusDWaitUncached = UInt(64.W)
   val mulStart = UInt(64.W)
   val divStart = UInt(64.W)
   val divBusyCycles = UInt(64.W)
@@ -641,8 +644,10 @@ class Backend(implicit p: CoreParams) extends Module {
       d_dec.info.rwen && nonZeroReg(d_rd) &&
       !d_src1_waits_e && !d_src2_waits_e
   val d_add_early_result = (d_src1 + d_src2)(p.xlen - 1, 0)
-  val d_lsu_base_e_forward = false.B
-  val d_lsu_base_data = d_rs1_data
+  val d_lsu_base_e_forward = d_dec.info.isLsu && d_dec.info.rs1en &&
+    e_valid && !e_uop.flushed && !e_killed_by_w &&
+    e_lsu_base_early_valid && e_lsu_base_early_rd === d_rs1
+  val d_lsu_base_data = Mux(d_lsu_base_e_forward, e_lsu_base_early_data, d_rs1_data)
   val d_lsu_addr = (d_lsu_base_data + d_dec.imm)(p.addrBits - 1, 0)
   val d_is_cmo = d_dec.info.isLsu && isCmoOp(d_dec.info.fuOpType)
   val d_is_load = d_dec.info.isLsu && !d_dec.info.isStore && !d_is_cmo
@@ -673,13 +678,14 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_rs1_var_haz = d_uses_rs1 && hitVar(d_rs1)
   val d_rs2_var_haz = d_uses_rs2 && hitVar(d_rs2)
   val d_rd_var_haz = d_writes_rd && hitVar(d_rd)
-  val d_rs1_e_haz = d_uses_rs1 && hitE(d_rs1)
+  val d_rs1_e_raw_haz = d_uses_rs1 && hitE(d_rs1)
+  val d_rs1_e_haz = d_rs1_e_raw_haz && !d_lsu_base_e_forward
   val d_rs2_e_haz = d_uses_rs2 && hitE(d_rs2)
   val d_e_raw_haz = d_rs1_e_haz || d_rs2_e_haz
   val d_rs1_w_haz = d_uses_rs1 && nonZeroReg(d_rs1) && wGpr === d_rs1
   val d_rs2_w_haz = d_uses_rs2 && nonZeroReg(d_rs2) && wGpr === d_rs2
   val d_w_raw_haz = d_rs1_w_haz || d_rs2_w_haz
-  val d_lsu_base_not_ready = d_dec.info.isLsu && d_rs1_e_haz && !d_lsu_base_e_forward
+  val d_lsu_base_not_ready = d_dec.info.isLsu && d_rs1_e_raw_haz && !d_lsu_base_e_forward
   val d_jr_not_ready = d_is_jalr && d_uses_rs1 && (hitE(d_rs1) || hitVar(d_rs1))
   val d_no_vslot = d_need_vslot_raw && !vAllocator.io.allocate.valid
   val d_div_resource_busy = d_is_div && d_writes_rd &&
@@ -1281,6 +1287,13 @@ class Backend(implicit p: CoreParams) extends Module {
   }
   when(d_bus_d_expected && !io.bus.d.fire) {
     perf.dBusDWait := perf.dBusDWait + 1.U
+    when(r_uses_bus) {
+      perf.dBusDWaitRefill := perf.dBusDWaitRefill + 1.U
+    }.elsewhen(wt_uses_bus) {
+      perf.dBusDWaitWriteThrough := perf.dBusDWaitWriteThrough + 1.U
+    }.otherwise {
+      perf.dBusDWaitUncached := perf.dBusDWaitUncached + 1.U
+    }
   }
 
   when(w_start_refill) {

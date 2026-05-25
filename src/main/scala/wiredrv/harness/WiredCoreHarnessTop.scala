@@ -141,6 +141,9 @@ class SimPerfPrinter extends BlackBox with HasBlackBoxInline {
     val backend_uncachedCycles = Input(UInt(64.W))
     val backend_dBusAWait = Input(UInt(64.W))
     val backend_dBusDWait = Input(UInt(64.W))
+    val backend_dBusDWaitRefill = Input(UInt(64.W))
+    val backend_dBusDWaitWriteThrough = Input(UInt(64.W))
+    val backend_dBusDWaitUncached = Input(UInt(64.W))
     val backend_mulStart = Input(UInt(64.W))
     val backend_divStart = Input(UInt(64.W))
     val backend_divBusyCycles = Input(UInt(64.W))
@@ -217,6 +220,9 @@ class SimPerfPrinter extends BlackBox with HasBlackBoxInline {
       |  input  [63:0] backend_uncachedCycles,
       |  input  [63:0] backend_dBusAWait,
       |  input  [63:0] backend_dBusDWait,
+      |  input  [63:0] backend_dBusDWaitRefill,
+      |  input  [63:0] backend_dBusDWaitWriteThrough,
+      |  input  [63:0] backend_dBusDWaitUncached,
       |  input  [63:0] backend_mulStart,
       |  input  [63:0] backend_divStart,
       |  input  [63:0] backend_divBusyCycles
@@ -265,6 +271,8 @@ class SimPerfPrinter extends BlackBox with HasBlackBoxInline {
       |      backend_storeQueueEnq, backend_storeQueueDrain, backend_storeQueueOneEntryCycles,
       |      backend_storeQueueFullCycles, backend_uncachedCycles, backend_dBusAWait,
       |      backend_dBusDWait, backend_divBusyCycles);
+      |    $display("[perf] bus-detail dWaitRefill=%0d dWaitWriteThrough=%0d dWaitUncached=%0d",
+      |      backend_dBusDWaitRefill, backend_dBusDWaitWriteThrough, backend_dBusDWaitUncached);
       |    $fflush();
       |  end
       |end
@@ -593,6 +601,9 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   perfPrinter.io.backend_uncachedCycles := core.io.backendPerf.uncachedCycles
   perfPrinter.io.backend_dBusAWait := core.io.backendPerf.dBusAWait
   perfPrinter.io.backend_dBusDWait := core.io.backendPerf.dBusDWait
+  perfPrinter.io.backend_dBusDWaitRefill := core.io.backendPerf.dBusDWaitRefill
+  perfPrinter.io.backend_dBusDWaitWriteThrough := core.io.backendPerf.dBusDWaitWriteThrough
+  perfPrinter.io.backend_dBusDWaitUncached := core.io.backendPerf.dBusDWaitUncached
   perfPrinter.io.backend_mulStart := core.io.backendPerf.mulStart
   perfPrinter.io.backend_divStart := core.io.backendPerf.divStart
   perfPrinter.io.backend_divBusyCycles := core.io.backendPerf.divBusyCycles
