@@ -299,7 +299,6 @@ class Backend(implicit p: CoreParams) extends Module {
       "h344".U(12.W) -> mipRead,
       "h3a0".U(12.W) -> pmpcfg0,
       "h3b0".U(12.W) -> pmpaddr0,
-      "h7a0".U(12.W) -> 1.U,
       "hc01".U(12.W) -> csrTime,
       "hc81".U(12.W) -> Cat(0.U(32.W), csrTime(63, 32)),
       "hb00".U(12.W) -> cycle, // mcycle
@@ -318,7 +317,7 @@ class Backend(implicit p: CoreParams) extends Module {
     ))
 
   private def legalizeMstatus(data: UInt): UInt =
-    (data & ~mstatusMppMask) | mstatusMppM
+    data
 
   private def legalizeCsrWrite(addr: UInt, data: UInt): UInt =
     Mux(addr === "h300".U, legalizeMstatus(data), data)
@@ -328,6 +327,9 @@ class Backend(implicit p: CoreParams) extends Module {
       addr === "h340".U || addr === "h341".U || addr === "h342".U ||
       addr === "h343".U || addr === "h344".U || addr === "h3a0".U ||
       addr === "h3b0".U
+
+  private def csrWrites(op: UInt, src: UInt): Bool =
+    op === CsrOp.csrrw || ((op === CsrOp.csrrs || op === CsrOp.csrrc) && src =/= 0.U)
 
   private def mergeByMask(base: UInt, data: UInt, mask: UInt): UInt = {
     val bitMask = byteMask(mask)
@@ -369,6 +371,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val mscratch = RegInit(0.U(p.xlen.W))
   val pmpcfg0 = RegInit(0.U(p.xlen.W))
   val pmpaddr0 = RegInit(0.U(p.xlen.W))
+  val privilegeMode = RegInit(3.U(2.W))
   private val mstatusMieBit = 3
   private val mstatusMpieBit = 7
   private val mstatusMieMask = (BigInt(1) << mstatusMieBit).U(p.xlen.W)
@@ -538,7 +541,7 @@ class Backend(implicit p: CoreParams) extends Module {
   io.diffDelayedWbData := 0.U
   io.diffRf := 0.U.asTypeOf(Vec(32, UInt(p.xlen.W)))
   io.diffCsr := 0.U.asTypeOf(new CoreCsrState)
-  io.diffCsr.privilegeMode := 3.U
+  io.diffCsr.privilegeMode := Cat(0.U((p.xlen - 2).W), privilegeMode)
   io.diffCsr.mstatus := mstatus
   io.diffCsr.mepc := mepc
   io.diffCsr.mtval := mtval
@@ -875,10 +878,11 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_csr_op = w_uop.info.fuType === FuType.csr &&
     (w_uop.info.fuOpType === CsrOp.csrrw || w_uop.info.fuOpType === CsrOp.csrrs || w_uop.info.fuOpType === CsrOp.csrrc)
   val w_csr_src = Mux(w_uop.info.src2Type === SrcType.imm, w_uop.src2, w_uop.src1)
+  val w_csr_writes = w_csr_op && csrWrites(w_uop.info.fuOpType, w_csr_src)
   val w_csr_write_data = legalizeCsrWrite(w_uop.csrAddr, csrWriteData(w_uop.info.fuOpType, w_result, w_csr_src))
   val w_csr_bypass_valid = w_valid && !w_uop.flushed &&
     !w_uop.isInterrupt && !w_uop.exceptionValid && !w_uop.info.illegal &&
-    w_csr_op && csrModeledWritable(w_uop.csrAddr)
+    w_csr_writes && csrModeledWritable(w_uop.csrAddr)
   val e_csr_read_data = Mux(
     w_csr_bypass_valid && w_uop.csrAddr === e_uop.csrAddr,
     w_csr_write_data,
@@ -896,10 +900,33 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_can_commit = w_valid && !w_uop.flushed
   val w_is_nemu_trap = w_uop.inst === RV64IInstructions.NEMU_TRAP.value.U
   val w_trap = w_can_commit && !w_is_nemu_trap && (w_uop.isInterrupt || w_uop.exceptionValid || w_uop.info.illegal)
-  val w_trap_code = Mux(w_uop.info.illegal && !w_uop.isInterrupt, 2.U(16.W), w_uop.exceptionCode)
+  val w_is_ecall = w_uop.inst === RV64IInstructions.ECALL.value.U
+  val w_ecall_code = Mux(privilegeMode === 0.U, 8.U(16.W), Mux(privilegeMode === 1.U, 9.U(16.W), 11.U(16.W)))
+  val w_trap_code = Mux(
+    w_uop.info.illegal && !w_uop.isInterrupt,
+    2.U(16.W),
+    Mux(w_is_ecall && !w_uop.isInterrupt, w_ecall_code, w_uop.exceptionCode)
+  )
   val w_trap_code_xlen = Cat(0.U((p.xlen - 16).W), w_trap_code)
   val w_interrupt_mcause_flag = Cat(1.B, 0.U((p.xlen - 1).W))
   val w_trap_mcause = Mux(w_uop.isInterrupt, w_interrupt_mcause_flag | w_trap_code_xlen, w_trap_code_xlen)
+  val w_trap_mtval = Mux(
+    !w_uop.isInterrupt && w_trap_code === 3.U,
+    Cat(0.U((p.xlen - p.addrBits).W), w_uop.pc),
+    0.U(p.xlen.W)
+  )
+  val privilegeModeXlen = Cat(0.U((p.xlen - 2).W), privilegeMode)
+  val trapMpp = (privilegeModeXlen << 11)(p.xlen - 1, 0)
+  val trapMstatusNext = legalizeMstatus(
+    (mstatus & ~mstatusMieMask & ~mstatusMpieMask & ~mstatusMppMask) |
+      trapMpp |
+      Mux(mstatus(mstatusMieBit), mstatusMpieMask, 0.U(p.xlen.W))
+  )
+  val mretMstatusNext = legalizeMstatus(
+    (mstatus & ~mstatusMieMask & ~mstatusMpieMask & ~mstatusMppMask) |
+      mstatusMpieMask |
+      Mux(mstatus(mstatusMpieBit), mstatusMieMask, 0.U(p.xlen.W))
+  )
   val w_is_load = w_uop.info.isLsu && !w_uop.info.isStore && !w_is_cmo
   val w_is_store = w_uop.info.isStore
   val w_lsu_addr = (w_uop.src1 + w_uop.imm)(p.addrBits - 1, 0)
@@ -925,8 +952,15 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_mdu_can_start = w_can_commit && w_is_mdu && w_mdu_needs_wb && !w_trap && !w_miss
   val w_mdu_is_mul = MduCalc.isMulOp(w_uop.info.fuOpType)
   val w_mdu_is_div = MduCalc.isDivOp(w_uop.info.fuOpType)
-  val w_trap_vector = mtvec(p.addrBits - 1, 0)
-  val w_csr_write_commit = w_can_commit && !w_trap && !w_mret_commit && !w_miss && w_csr_op
+  val mtvecBase = Cat(mtvec(p.addrBits - 1, 2), 0.U(2.W))
+  val w_trap_vector_offset = (Cat(0.U((p.addrBits - 16).W), w_trap_code) << 2)(p.addrBits - 1, 0)
+  val w_trap_vector = Mux(
+    w_uop.isInterrupt && mtvec(1, 0) === 1.U,
+    mtvecBase + w_trap_vector_offset,
+    mtvecBase
+  )
+  val w_csr_write_commit = w_can_commit && !w_trap && !w_mret_commit && !w_miss &&
+    w_csr_writes && csrModeledWritable(w_uop.csrAddr)
 
   mulPipe.io.in.valid := w_mdu_can_start && w_mdu_is_mul
   mulPipe.io.in.bits.src1 := w_uop.src1
@@ -957,7 +991,7 @@ class Backend(implicit p: CoreParams) extends Module {
 
   io.ifencei := w_flush_pipe && w_is_fence_i && !w_miss
 
-  val w_commit_valid = w_can_commit && !w_miss && !w_trap && !w_mret_commit && !w_lsu_bypass
+  val w_commit_valid = w_can_commit && !w_miss && !w_trap && !w_lsu_bypass
   val w_exit = w_commit_valid && w_is_nemu_trap
   io.commit.valid := w_commit_valid
   io.commit.bits.pc := w_uop.pc
@@ -1018,6 +1052,47 @@ class Backend(implicit p: CoreParams) extends Module {
   }
   io.diffRf := diff_rf
 
+  val diffMstatus = WireDefault(mstatus)
+  val diffMepc = WireDefault(mepc)
+  val diffMtval = WireDefault(mtval)
+  val diffMtvec = WireDefault(mtvec)
+  val diffMcause = WireDefault(mcause)
+  val diffMip = WireDefault(mipRead)
+  val diffMie = WireDefault(mie)
+  val diffMscratch = WireDefault(mscratch)
+  val diffPrivilegeMode = WireDefault(Cat(0.U((p.xlen - 2).W), privilegeMode))
+  val mretPrivilegeMode = mstatus(12, 11)
+  when(w_trap) {
+    diffPrivilegeMode := 3.U
+    diffMstatus := trapMstatusNext
+    diffMepc := w_uop.pc
+    diffMtval := w_trap_mtval
+    diffMcause := w_trap_mcause
+  }.elsewhen(w_mret_commit) {
+    diffPrivilegeMode := Cat(0.U((p.xlen - 2).W), mretPrivilegeMode)
+    diffMstatus := mretMstatusNext
+  }.elsewhen(w_csr_write_commit) {
+    switch(w_uop.csrAddr) {
+      is("h300".U) { diffMstatus := w_csr_write_data }
+      is("h304".U) { diffMie := w_csr_write_data }
+      is("h305".U) { diffMtvec := w_csr_write_data }
+      is("h340".U) { diffMscratch := w_csr_write_data }
+      is("h341".U) { diffMepc := w_csr_write_data }
+      is("h342".U) { diffMcause := w_csr_write_data }
+      is("h343".U) { diffMtval := w_csr_write_data }
+      is("h344".U) { diffMip := w_csr_write_data | linePendingMask }
+    }
+  }
+  io.diffCsr.privilegeMode := diffPrivilegeMode
+  io.diffCsr.mstatus := diffMstatus
+  io.diffCsr.mepc := diffMepc
+  io.diffCsr.mtval := diffMtval
+  io.diffCsr.mtvec := diffMtvec
+  io.diffCsr.mcause := diffMcause
+  io.diffCsr.mip := diffMip
+  io.diffCsr.mie := diffMie
+  io.diffCsr.mscratch := diffMscratch
+
   when(v_rfen && nonZeroReg(v_rf)) {
     rf(v_rf) := v_rfdata
   }
@@ -1029,14 +1104,14 @@ class Backend(implicit p: CoreParams) extends Module {
   rf(0) := 0.U
 
   when(w_trap) {
-    val trapMstatusBase = mstatus & ~mstatusMieMask & ~mstatusMpieMask
-    mstatus := legalizeMstatus(trapMstatusBase | Mux(mstatus(mstatusMieBit), mstatusMpieMask, 0.U))
+    privilegeMode := 3.U
+    mstatus := trapMstatusNext
     mepc := w_uop.pc
     mcause := w_trap_mcause
-    mtval := 0.U
+    mtval := w_trap_mtval
   }.elsewhen(w_mret_commit) {
-    val mretMstatusBase = mstatus & ~mstatusMieMask & ~mstatusMpieMask
-    mstatus := legalizeMstatus(mretMstatusBase | mstatusMpieMask | Mux(mstatus(mstatusMpieBit), mstatusMieMask, 0.U))
+    privilegeMode := mretPrivilegeMode
+    mstatus := mretMstatusNext
   }.elsewhen(w_csr_write_commit) {
     switch(w_uop.csrAddr) {
       is("h300".U) { mstatus := w_csr_write_data }

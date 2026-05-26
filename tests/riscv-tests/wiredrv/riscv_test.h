@@ -3,6 +3,8 @@
 #ifndef _WIREDRV_RISCV_TEST_H
 #define _WIREDRV_RISCV_TEST_H
 
+#include "encoding.h"
+
 #define RVTEST_RV64U \
   .macro init; \
   .endm
@@ -11,8 +13,18 @@
   .macro init; \
   .endm
 
-#define RVTEST_RV64M RVTEST_RV64U
-#define RVTEST_RV64S RVTEST_RV64U
+#define WIREDRV_INIT_MTVEC \
+  la t0, mtvec_handler; \
+  beqz t0, 9f; \
+  csrw mtvec, t0; \
+9:
+
+#define RVTEST_RV64M \
+  .macro init; \
+  WIREDRV_INIT_MTVEC; \
+  .endm
+
+#define RVTEST_RV64S RVTEST_RV64M
 #define RVTEST_RV32M RVTEST_RV32U
 #define RVTEST_RV32S RVTEST_RV32U
 
@@ -56,6 +68,7 @@
 #define RVTEST_CODE_BEGIN \
   .section .text.init; \
   .align 6; \
+  .weak mtvec_handler; \
   .globl _start; \
 _start: \
   .option push; \

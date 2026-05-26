@@ -259,6 +259,20 @@ else
   echo "[1/3] skip workload build"
 fi
 
+missing_elfs=()
+for i in "${!names[@]}"; do
+  if [[ ! -f "${elfs[$i]}" ]]; then
+    missing_elfs+=("${names[$i]}  missing elf: ${elfs[$i]}")
+  fi
+done
+if [[ "${#missing_elfs[@]}" -ne 0 ]]; then
+  echo "workload missing; rerun with BUILD_WORKLOADS=1 or remove unavailable tests:" >&2
+  for item in "${missing_elfs[@]}"; do
+    echo "  $item" >&2
+  done
+  exit 1
+fi
+
 if [[ "$NO_DIFF" != 1 && "$BUILD_NEMU" == 1 ]]; then
   echo "[2/3] build NEMU reference"
   make nemu-ref
@@ -283,12 +297,13 @@ fi
 
 echo "[run] execute tests in parallel"
 run_cmds=()
-pass_pattern='HIT GOOD TRAP|good trap|PASS|passed|EXIT at pc'
+pass_pattern='HIT GOOD TRAP|good trap|PASS|passed'
 for i in "${!names[@]}"; do
   name="${names[$i]}"
   elf="${elfs[$i]}"
   run_dir="$LOG_DIR/$name"
   log="$run_dir/sim.log"
+  status="$run_dir/status"
   args=("-i" "$elf" "-I" "$EMU_MAX_INSTR")
   if [[ -n "$EMU_MAX_CYCLES" ]]; then
     args+=("-C" "$EMU_MAX_CYCLES")
@@ -307,7 +322,7 @@ for i in "${!names[@]}"; do
   for arg in "${args[@]}"; do
     cmd+=" $(quote "$arg")"
   done
-  cmd+=" >$(quote "$log") 2>&1"
+  cmd+=" >$(quote "$log") 2>&1; rc=\$?; printf '%s\n' \"\$rc\" >$(quote "$status"); exit \"\$rc\""
   run_cmds+=("$cmd")
 done
 
@@ -315,9 +330,61 @@ run_limited run_cmds || true
 
 failed=()
 for i in "${!names[@]}"; do
+  name="${names[$i]}"
   log="$LOG_DIR/${names[$i]}/sim.log"
-  if [[ ! -f "$log" ]] || ! tail -n 20 "$log" | grep -Eiq "$pass_pattern"; then
-    failed+=("${names[$i]}  log: $log")
+  status="$LOG_DIR/${names[$i]}/status"
+  disasm="$ROOT/build/disasm/$name.txt"
+  rc=""
+  [[ -f "$status" ]] && read -r rc < "$status"
+  if [[ ! -f "$log" ]]; then
+    failed+=("${names[$i]}  log missing: $log")
+  elif [[ ! -f "$status" || "$rc" != 0 ]]; then
+    failed+=("${names[$i]}  status: ${rc:-missing}  log: $log")
+  else
+    exit_pc="$(grep -aoE 'EXIT at pc = 0x[0-9a-fA-F]+' "$log" | tail -n 1 | sed 's/.*0x//')"
+    exit_ok=0
+    if [[ -n "$exit_pc" && -f "$disasm" ]]; then
+      fail_pc="$(awk '/<fail>:/ { gsub(":", "", $1); print $1; exit }' "$disasm")"
+      pass_pc="$(awk '/<pass>:/ { gsub(":", "", $1); print $1; exit }' "$disasm")"
+      if [[ -n "$fail_pc" && -n "$pass_pc" ]]; then
+        exit_dec=$((16#$exit_pc))
+        fail_dec=$((16#$fail_pc))
+        pass_dec=$((16#$pass_pc))
+        if (( exit_dec >= fail_dec && exit_dec < pass_dec )); then
+          failed+=("${names[$i]}  exit pc in fail path: 0x$exit_pc  log: $log")
+          continue
+        elif (( exit_dec >= pass_dec )); then
+          exit_ok=1
+        fi
+      fi
+      if [[ "$exit_ok" != 1 ]]; then
+        trap_ok="$(awk -v pc="$exit_pc" '
+          BEGIN { ok = 0 }
+          {
+            addr = tolower($1)
+            gsub(":", "", addr)
+            if (addr == tolower(pc)) {
+              exit_line = $0
+              trap_line = ""
+              if (getline > 0) {
+                trap_line = $0
+              }
+              if (exit_line ~ /00000513/ && trap_line ~ /0000006b/) {
+                ok = 1
+                exit
+              }
+            }
+          }
+          END { print ok }
+        ' "$disasm")"
+        if [[ "$trap_ok" == 1 ]]; then
+          exit_ok=1
+        fi
+      fi
+    fi
+    if [[ "$exit_ok" != 1 ]] && ! tail -n 20 "$log" | grep -Eiq "$pass_pattern"; then
+      failed+=("${names[$i]}  log: $log")
+    fi
   fi
 done
 
