@@ -8,7 +8,7 @@ val workspaceRoot = BuildCtx.workspaceRoot
 val depsRoot = workspaceRoot / "deps"
 val laomaSubsystemPath = depsRoot / "LaomaSubsystem"
 val laomaAxiPath = laomaSubsystemPath / "src" / "main" / "scala" / "lmss" / "axi"
-val laomaXsUtilsPath = laomaSubsystemPath / "xs-utils" / "src" / "main" / "scala" / "xs" / "utils"
+val laomaXsUtilsPath = laomaSubsystemPath / "xs-utils" / "src" / "main" / "scala"
 val laomaCdePath = laomaSubsystemPath / "rocket-chip" / "dependencies" / "cde" / "cde" / "src"
 val difftestPath = depsRoot / "difftest"
 
@@ -46,6 +46,8 @@ object v {
 }
 
 object difftest extends Cross[DiffTest](Seq(v.chiselVersion))
+object cde extends Cde
+object xsutils extends Cross[XsUtils](Seq(v.chiselVersion))
 object wiredrv extends Cross[WiredRV](Seq(v.chiselVersion))
 
 trait Chisel7Module extends ScalaModule with Cross.Module[String] {
@@ -81,6 +83,49 @@ trait DiffTest
   }
 }
 
+trait Cde extends ScalaModule {
+  def scalaVersion = v.scalaVersion
+
+  override def moduleDir = laomaCdePath
+
+  override def sources = Task.Sources {
+    moduleDir
+  }
+}
+
+trait XsUtils
+    extends HasChisel
+    with Chisel7Module {
+  override def moduleDir = laomaSubsystemPath / "xs-utils"
+
+  override def sources = Task.Sources(
+    laomaXsUtilsPath / "xs" / "utils" / "package.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "GlobalData.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "FileRegisters.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "ResetGen.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "PickOne.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "queue" / "CircularQueuePtr.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "queue" / "FastQueue.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "queue" / "MimoQueue.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "queue" / "OverrideableQueue.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "verilog" / "ClockGate.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "dft" / "package.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "mbist" / "Mbist.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "mbist" / "MbistBus.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "mbist" / "MbistClockGateCell.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "mbist" / "MbistCsvGen.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "mbist" / "MbistPipeline.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SramProto.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SramHelper.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SramInstGen.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SramResetGen.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SramQueue.scala",
+    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SRAMTemplate.scala"
+  )
+
+  override def moduleDeps = super.moduleDeps ++ Seq(cde)
+}
+
 trait WiredRV
     extends WiredRVModule
     with Chisel7Module {
@@ -93,14 +138,13 @@ trait WiredRV
   override def sources = Task.Sources(
     moduleDir / "src" / "main" / "scala",
     laomaAxiPath / "package.scala",
-    laomaAxiPath / "AxiNarrowToWide.scala",
-    laomaXsUtilsPath / "PickOne.scala",
-    laomaXsUtilsPath / "queue" / "CircularQueuePtr.scala",
-    laomaXsUtilsPath / "queue" / "FastQueue.scala",
-    laomaCdePath
+    laomaAxiPath / "AxiNarrowToWide.scala"
   )
 
   def difftestModule = difftest(chiselVersion)
+  def xsutilsModule = xsutils(chiselVersion)
+
+  override def moduleDeps = super.moduleDeps ++ Seq(xsutilsModule)
 
   override def forkArgs = millForkArgs
   override def scalacOptions = super.scalacOptions() ++ Seq("-Xcheckinit")

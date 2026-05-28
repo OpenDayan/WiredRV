@@ -6,6 +6,7 @@ import wiredrv.CoreParams
 import wiredrv.bus._
 import wiredrv.bus.BusOp.{ReadOnly, StoreOnly}
 import wiredrv.frontend.{BranchUpdate, FetchPacket}
+import xs.utils.mbist.MbistPipeline
 import xs.utils.sram.SRAMTemplate
 
 class CoreCsrState(implicit p: CoreParams) extends Bundle {
@@ -117,7 +118,6 @@ class BackendPerfCounters extends Bundle {
   val dBusAWait = UInt(64.W)
   val dBusDWait = UInt(64.W)
   val dBusDWaitRefill = UInt(64.W)
-  val dBusDWaitWriteThrough = UInt(64.W)
   val dBusDWaitUncached = UInt(64.W)
   val mulStart = UInt(64.W)
   val divStart = UInt(64.W)
@@ -129,10 +129,6 @@ object DCacheRefillState {
 }
 
 object UncachedState {
-  val idle :: sendA :: recvD :: Nil = Enum(3)
-}
-
-object StoreWriteState {
   val idle :: sendA :: recvD :: Nil = Enum(3)
 }
 
@@ -419,10 +415,13 @@ class Backend(implicit p: CoreParams) extends Module {
   val decoder = Module(new Decode)
 
   val dc_valid = RegInit(0.U.asTypeOf(Vec(p.dcacheWays, Vec(p.dcacheSets, Bool()))))
-  val dc_tags = Seq.fill(p.dcacheWays)(Module(new SRAMTemplate(new DCTag, p.dcacheSets, singlePort = true)))
-  val dc_datas = Seq.fill(p.dcacheWays)(
-    Module(new SRAMTemplate(UInt(p.xlen.W), dataSetCount, singlePort = true, useBitmask = true))
+  val dc_tags = Seq.fill(p.dcacheWays)(
+    Module(new SRAMTemplate(new DCTag, p.dcacheSets, way = 1, singlePort = true, hasMbist = true))
   )
+  val dc_datas = Seq.fill(p.dcacheWays)(
+    Module(new SRAMTemplate(UInt(p.xlen.W), dataSetCount, way = 1, singlePort = true, useBitmask = true, hasMbist = true))
+  )
+  private val dcMbistPipeline = MbistPipeline.PlaceMbistPipeline(1, "MbistPipelineWiredRVBackend", place = true)
   val store_queue = RegInit(VecInit(Seq.fill(2)(0.U.asTypeOf(new StoreQueueEntry))))
   val sq_has_entry = store_queue(0).valid || store_queue(1).valid
   val next_replace_way = RegInit(0.U(log2Ceil(p.dcacheWays).W))
@@ -465,12 +464,6 @@ class Backend(implicit p: CoreParams) extends Module {
   val u_byte_mode = RegInit(false.B)
   val u_byte_idx = RegInit(0.U(byteIdxBits.W))
   val u_byte_count = RegInit(1.U(byteCountBits.W))
-  val wt_state = RegInit(StoreWriteState.idle)
-  val wt_a_valid = RegInit(false.B)
-  val wt_addr = RegInit(0.U(p.addrBits.W))
-  val wt_mask = RegInit(0.U(bytesPerWord.W))
-  val wt_data = RegInit(0.U(p.xlen.W))
-  val wt_upper = RegInit(false.B)
   val simUartValid = RegInit(false.B)
   val simUartBits = Reg(UInt(8.W))
 
@@ -615,10 +608,12 @@ class Backend(implicit p: CoreParams) extends Module {
   def hitE(reg: UInt): Bool = nonZeroReg(reg) && eGpr === reg
   def hitVar(reg: UInt): Bool =
     nonZeroReg(reg) && VecInit((0 until p.longLatencySlots).map(i => v_gpr(i) === reg)).asUInt.orR
+  def longWbHit(reg: UInt): Bool =
+    v_rfen && nonZeroReg(reg) && v_rf === reg
 
   def rfRead(reg: UInt): UInt = Mux(reg === 0.U, 0.U, rf(reg))
   def dForward(reg: UInt, data: UInt): UInt =
-    Mux(wGpr === reg && nonZeroReg(reg), w_rfdata, data)
+    Mux(wGpr === reg && nonZeroReg(reg), w_rfdata, Mux(longWbHit(reg), v_rfdata, data))
 
   val d_rs1_rf = rfRead(d_rs1)
   val d_rs2_rf = rfRead(d_rs2)
@@ -672,63 +667,69 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_exception_valid = d_dec.exceptionValid || d_jump_target_misaligned
   val d_exception_code = Mux(d_jump_target_misaligned, 0.U(16.W), d_dec.exceptionCode)
   val d_is_uncached = d_dec.info.isLsu && !d_is_cmo && inRegions(d_lsu_addr, p.uncachedRegions)
+  val d_cache_access = d_dec.info.isLsu && !d_is_uncached && !d_lsu_misaligned
   val d_is_mext_long_latency = d_dec.info.fuType === FuType.mdu
   val d_is_div = d_is_mext_long_latency && MduCalc.isDivOp(d_dec.info.fuOpType)
   val d_need_vslot_raw = d_is_uncached || d_lsu_misaligned || (d_is_mext_long_latency && d_writes_rd)
   val e_is_div = e_valid && !e_uop.flushed && e_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(e_uop.info.fuOpType)
   val w_is_div_pipe = w_valid && !w_uop.flushed && w_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(w_uop.info.fuOpType)
+  val e_result_forwardable_to_w =
+    e_valid && !e_uop.flushed && !e_killed_by_w &&
+      !e_uop.vslot_valid && e_uop.info.rwen && nonZeroReg(e_uop.rd) &&
+      !e_uop.exceptionValid && !e_uop.info.illegal &&
+      e_uop.info.fuType === FuType.alu
+  def hitEForwardable(reg: UInt): Bool = hitE(reg) && e_result_forwardable_to_w
 
-  val d_rs1_var_haz = d_uses_rs1 && hitVar(d_rs1)
-  val d_rs2_var_haz = d_uses_rs2 && hitVar(d_rs2)
+  val d_rs1_var_haz = d_uses_rs1 && hitVar(d_rs1) && !longWbHit(d_rs1)
+  val d_rs2_var_haz = d_uses_rs2 && hitVar(d_rs2) && !longWbHit(d_rs2)
   val d_rd_var_haz = d_writes_rd && hitVar(d_rd)
   val d_rs1_e_raw_haz = d_uses_rs1 && hitE(d_rs1)
-  val d_rs1_e_haz = d_rs1_e_raw_haz && !d_lsu_base_e_forward
-  val d_rs2_e_haz = d_uses_rs2 && hitE(d_rs2)
+  val d_rs1_e_forwardable = d_uses_rs1 && hitEForwardable(d_rs1)
+  val d_rs2_e_forwardable = d_uses_rs2 && hitEForwardable(d_rs2)
+  val d_rs1_e_haz = d_rs1_e_raw_haz && !d_lsu_base_e_forward && !(d_rs1_e_forwardable && !d_dec.info.isLsu)
+  val d_rs2_e_haz = d_uses_rs2 && hitE(d_rs2) && !d_rs2_e_forwardable
   val d_e_raw_haz = d_rs1_e_haz || d_rs2_e_haz
   val d_rs1_w_haz = d_uses_rs1 && nonZeroReg(d_rs1) && wGpr === d_rs1
   val d_rs2_w_haz = d_uses_rs2 && nonZeroReg(d_rs2) && wGpr === d_rs2
   val d_w_raw_haz = d_rs1_w_haz || d_rs2_w_haz
   val d_lsu_base_not_ready = d_dec.info.isLsu && d_rs1_e_raw_haz && !d_lsu_base_e_forward
-  val d_jr_not_ready = d_is_jalr && d_uses_rs1 && (hitE(d_rs1) || hitVar(d_rs1))
+  val d_jr_not_ready = d_is_jalr && d_uses_rs1 && (hitE(d_rs1) || (hitVar(d_rs1) && !longWbHit(d_rs1)))
   val d_no_vslot = d_need_vslot_raw && !vAllocator.io.allocate.valid
   val d_div_resource_busy = d_is_div && d_writes_rd &&
     (e_is_div || w_is_div_pipe || divUnit.io.busy || div_wb_pending_valid)
   val d_cache_busy = r_state =/= DCacheRefillState.idle
-  val d_write_through_busy = wt_state =/= StoreWriteState.idle
   val d_uncached_busy = u_state =/= UncachedState.idle
   val d_inflight_store_wait =
     (e_valid && !e_uop.flushed && !e_killed_by_w && e_uop.info.isStore) ||
       (w_valid && !w_uop.flushed && w_uop.info.isStore)
   val d_load_can_use_store_forward =
     d_is_load && !d_is_uncached && !d_lsu_misaligned && !d_is_cmo
-  val d_lsu_write_through_busy =
-    d_dec.info.isLsu && d_write_through_busy && !d_load_can_use_store_forward
   val d_store_queue_wait =
     d_dec.info.isLsu && !d_load_can_use_store_forward && (sq_has_entry || d_inflight_store_wait)
   val d_fence_wait = d_is_fence && (
     sq_has_entry ||
       (e_valid && !e_uop.flushed && e_uop.info.isLsu) ||
       (w_valid && !w_uop.flushed && w_uop.info.isStore) ||
-      d_cache_busy || d_write_through_busy || d_uncached_busy
+      d_cache_busy || d_uncached_busy
   )
   val d_misaligned_wait = d_lsu_misaligned && (
     sq_has_entry ||
       (e_valid && !e_uop.flushed && e_uop.info.isStore) ||
       (w_valid && !w_uop.flushed && w_uop.info.isStore) ||
-      d_cache_busy || d_write_through_busy || d_uncached_busy
+      d_cache_busy || d_uncached_busy
   )
   val d_nemu_trap_wait = d_is_nemu_trap && (
     sq_has_entry ||
       d_inflight_store_wait ||
       (e_valid && !e_uop.flushed) ||
       (w_valid && !w_uop.flushed) ||
-      d_cache_busy || d_write_through_busy || d_uncached_busy
+      d_cache_busy || d_uncached_busy
   )
   val d_stall =
     d_rs1_var_haz || d_rs2_var_haz || d_rd_var_haz ||
       d_e_raw_haz || d_lsu_base_not_ready || d_jr_not_ready ||
       d_no_vslot || d_div_resource_busy || d_cache_busy || d_uncached_busy ||
-      d_lsu_write_through_busy || d_store_queue_wait || d_fence_wait || d_misaligned_wait || d_nemu_trap_wait
+      d_store_queue_wait || d_fence_wait || d_misaligned_wait || d_nemu_trap_wait
 
   io.inst.ready := !d_stall
   val d_fire = io.inst.valid && io.inst.ready
@@ -767,9 +768,9 @@ class Backend(implicit p: CoreParams) extends Module {
   d_make_uop.src1 := Mux(d_dec.info.isLsu && d_dec.info.rs1en, d_lsu_base_data, d_src1)
   d_make_uop.src2 := d_src2
   d_make_uop.store_data := d_rs2_data
-  d_make_uop.src1_forward_w := !d_dec.info.isLsu && d_dec.info.src1Type === SrcType.reg && hitE(d_rs1)
-  d_make_uop.src2_forward_w := d_dec.info.src2Type === SrcType.reg && hitE(d_rs2)
-  d_make_uop.store_forward_w := d_dec.info.rs2en && hitE(d_rs2)
+  d_make_uop.src1_forward_w := !d_dec.info.isLsu && d_dec.info.src1Type === SrcType.reg && d_rs1_e_forwardable
+  d_make_uop.src2_forward_w := d_dec.info.src2Type === SrcType.reg && d_rs2_e_forwardable
+  d_make_uop.store_forward_w := d_dec.info.rs2en && d_rs2_e_forwardable
   d_make_uop.flushed := d_flushed
   d_make_uop.vslot_valid := d_need_vslot
   d_make_uop.vslot := d_vslot
@@ -781,7 +782,6 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val d_dcache_set = p.dcacheGetSet(d_lsu_addr)
   val d_dcache_idx = dcacheDataIdx(d_lsu_addr)
-  val d_cache_access = d_dec.info.isLsu && !d_is_uncached && !d_lsu_misaligned
   val d_read_tag = d_enqueue && !d_interrupt_take && d_cache_access && !d_lsu_misaligned
   val d_read_data = d_enqueue && !d_interrupt_take && d_is_load && !d_is_uncached && !d_lsu_misaligned
   for (i <- 0 until p.dcacheWays) {
@@ -941,7 +941,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_flush_pipe = w_can_commit && !w_trap && !w_mret_commit && w_uop.info.flushPipe
   val w_store_commit = w_can_commit && !w_lsu_bypass && w_is_store && w_hit && !w_miss && !w_trap
   val w_bus_available =
-    r_state === DCacheRefillState.idle && wt_state === StoreWriteState.idle && u_state === UncachedState.idle
+    r_state === DCacheRefillState.idle && u_state === UncachedState.idle
   val w_start_refill = w_can_commit && !w_trap && !w_lsu_bypass && w_miss && !sq_has_entry &&
     w_bus_available
   val w_start_cmo = w_can_commit && !w_trap && !w_lsu_bypass && w_is_cmo && !sq_has_entry &&
@@ -1211,7 +1211,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val sq_drain_entry = Mux(sq_drain_sel === 0.U, store_queue(0), store_queue(1))
   val sq_pipeline_lsu_busy = (e_can_side_effect && e_uop.info.isLsu) || (w_can_commit && w_uop.info.isLsu)
   val sq_can_drain =
-    r_state === DCacheRefillState.idle && wt_state === StoreWriteState.idle && u_state === UncachedState.idle &&
+    r_state === DCacheRefillState.idle && u_state === UncachedState.idle &&
       !sq_pipeline_lsu_busy && !d_read_tag && !d_read_data &&
       !w_start_refill && !w_start_cmo && !w_start_uncached
   val sq_drain = sq_can_drain && sq_has_entry
@@ -1231,14 +1231,6 @@ class Backend(implicit p: CoreParams) extends Module {
         dc_tag_w_data(i) := tag_data
       }
     }
-
-    // Keep backing memory coherent for fence.i and byte-mode misaligned accesses.
-    wt_addr := sq_drain_entry.addr
-    wt_mask := sq_drain_entry.mask
-    wt_data := sq_drain_entry.data
-    wt_upper := !sq_drain_entry.mask(3, 0).orR && sq_drain_entry.mask(7, 4).orR
-    wt_a_valid := true.B
-    wt_state := StoreWriteState.sendA
   }
 
   val sq_after_drain = WireDefault(store_queue)
@@ -1294,13 +1286,6 @@ class Backend(implicit p: CoreParams) extends Module {
   val r_send_read = r_state === DCacheRefillState.sendA
   val r_write_beat_data = Mux(r_wb_beat === 0.U, r_wb_word(31, 0), r_wb_word(63, 32))
   val r_write_beat_addr = r_wb_addr + (r_cnt << wordOffsetBits) + (r_wb_beat << busOffsetBits)
-  val wt_send = wt_state === StoreWriteState.sendA
-  val wt_recv = wt_state === StoreWriteState.recvD
-  val wt_base_addr = Cat(wt_addr(p.addrBits - 1, wordOffsetBits), 0.U(wordOffsetBits.W))
-  val wt_bus_addr = wt_base_addr + Mux(wt_upper, busBytes.U(p.addrBits.W), 0.U(p.addrBits.W))
-  val wt_bus_data = Mux(wt_upper, wt_data(63, 32), wt_data(31, 0))
-  val wt_bus_mask = Mux(wt_upper, wt_mask(7, 4), wt_mask(3, 0))
-  val wt_last_beat = wt_upper || !wt_mask(7, 4).orR
   val u_send = u_state === UncachedState.sendA
   val u_recv = u_state === UncachedState.recvD
   val u_normal_bus_addr = Cat(u_addr(p.addrBits - 1, busOffsetBits), 0.U(busOffsetBits.W)) + (u_beat << busOffsetBits)
@@ -1327,36 +1312,35 @@ class Backend(implicit p: CoreParams) extends Module {
   val u_complete_can_write = !long_wb_valid
 
   val r_uses_bus = r_state =/= DCacheRefillState.idle
-  val wt_uses_bus = wt_state =/= StoreWriteState.idle
   io.bus.a.valid := Mux(
     r_uses_bus,
     (r_send_read || r_send_write) && r_a_valid,
-    Mux(wt_uses_bus, wt_send && wt_a_valid, u_send && u_a_valid)
+    u_send && u_a_valid
   )
   io.bus.a.bits.op := Mux(
     r_uses_bus,
     Mux(r_send_write, StoreOnly, ReadOnly),
-    Mux(wt_uses_bus, StoreOnly, Mux(u_is_store, StoreOnly, ReadOnly))
+    Mux(u_is_store, StoreOnly, ReadOnly)
   )
   io.bus.a.bits.id := 1.U
   io.bus.a.bits.size := Mux(
     r_uses_bus,
     Mux(r_send_write, log2Ceil(busBytes).U, log2Ceil(p.dcacheLineBytes).U),
-    Mux(wt_uses_bus, log2Ceil(busBytes).U, u_bus_size)
+    u_bus_size
   )
   io.bus.a.bits.address := Mux(
     r_uses_bus,
     Mux(r_send_write, r_write_beat_addr, r_line_addr),
-    Mux(wt_uses_bus, wt_bus_addr, u_bus_addr)
+    u_bus_addr
   )
-  io.bus.a.bits.mask := Mux(r_uses_bus, Fill(busBytes, 1.U), Mux(wt_uses_bus, wt_bus_mask, u_bus_mask))
-  io.bus.a.bits.data := Mux(r_uses_bus, r_write_beat_data, Mux(wt_uses_bus, wt_bus_data, u_bus_data))
+  io.bus.a.bits.mask := Mux(r_uses_bus, Fill(busBytes, 1.U), u_bus_mask)
+  io.bus.a.bits.data := Mux(r_uses_bus, r_write_beat_data, u_bus_data)
   io.bus.d.ready := Mux(
     r_uses_bus,
     r_state === DCacheRefillState.recvD || r_send_write,
-    Mux(wt_uses_bus, wt_recv, u_recv && (!u_last_beat || u_complete_can_write))
+    u_recv && (!u_last_beat || u_complete_can_write)
   )
-  val d_bus_d_expected = Mux(r_uses_bus, r_state === DCacheRefillState.recvD || r_send_write, Mux(wt_uses_bus, wt_recv, u_recv))
+  val d_bus_d_expected = Mux(r_uses_bus, r_state === DCacheRefillState.recvD || r_send_write, u_recv)
   when(io.bus.a.valid && !io.bus.a.ready) {
     perf.dBusAWait := perf.dBusAWait + 1.U
   }
@@ -1364,8 +1348,6 @@ class Backend(implicit p: CoreParams) extends Module {
     perf.dBusDWait := perf.dBusDWait + 1.U
     when(r_uses_bus) {
       perf.dBusDWaitRefill := perf.dBusDWaitRefill + 1.U
-    }.elsewhen(wt_uses_bus) {
-      perf.dBusDWaitWriteThrough := perf.dBusDWaitWriteThrough + 1.U
     }.otherwise {
       perf.dBusDWaitUncached := perf.dBusDWaitUncached + 1.U
     }
@@ -1421,22 +1403,6 @@ class Backend(implicit p: CoreParams) extends Module {
 
   when(r_uses_bus && io.bus.a.fire) {
     r_a_valid := false.B
-  }
-
-  when(wt_send && io.bus.a.fire) {
-    wt_a_valid := false.B
-    wt_state := StoreWriteState.recvD
-  }
-
-  when(wt_recv && io.bus.d.fire) {
-    when(wt_last_beat) {
-      wt_a_valid := false.B
-      wt_state := StoreWriteState.idle
-    }.otherwise {
-      wt_upper := true.B
-      wt_a_valid := true.B
-      wt_state := StoreWriteState.sendA
-    }
   }
 
   when(r_state === DCacheRefillState.sendA && io.bus.a.fire) {

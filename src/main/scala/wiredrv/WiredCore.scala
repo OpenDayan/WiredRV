@@ -6,6 +6,9 @@ import lmss.axi._
 import wiredrv.bus._
 import wiredrv.backend._
 import wiredrv.frontend._
+import xs.utils.dft.BaseTestBundle
+import xs.utils.mbist.MbistInterface
+import xs.utils.sram.{SramCtrlBundle, SramHelper}
 
 class WiredCoreIO(implicit p: CoreParams) extends Bundle {
   val inst = Decoupled(new FetchPacket)
@@ -20,6 +23,8 @@ class WiredCoreIO(implicit p: CoreParams) extends Bundle {
   val clusterInterrupt = Input(Bool())
   val debug = Input(Bool())
   val time = Input(Valid(UInt(64.W)))
+  val dft = Input(new BaseTestBundle)
+  val ramctl = Input(new SramCtrlBundle)
   val diffCommitValid = Output(Bool())
   val diffCommitPc = Output(UInt(p.addrBits.W))
   val diffCommitInst = Output(UInt(32.W))
@@ -55,6 +60,12 @@ class WiredCore(implicit p: CoreParams) extends Module {
   val dmemToAxi = Module(new BusToAxi(p.innerBusWidth))
   val dmemWidthUp = Module(new AxiNarrowToWide(innerAxi, outerAxi, buffer = 4))
   val xbar = Module(new LmssAxiXbar(Seq(outerAxi, outerAxi)))
+
+  private val sramBroadcast = SramHelper.genBroadCastBundleTop()
+  sramBroadcast := io.dft.toSramBroadCastBundle
+  private val sramCtrl = SramHelper.genSramCtrlBundleTop()
+  sramCtrl := io.ramctl
+  private val mbistInterface = MbistInterface("WiredRV", sramBroadcast, enable = true)
 
   backend.io.inst <> frontend.io.inst
   backend.io.hartId := io.hartId

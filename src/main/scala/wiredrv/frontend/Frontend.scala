@@ -5,6 +5,7 @@ import chisel3.util._
 import wiredrv.CoreParams
 import wiredrv.bus._
 import wiredrv.bus.BusOp.ReadOnly
+import xs.utils.mbist.MbistPipeline
 import xs.utils.sram.SRAMTemplate
 
 class FetchPacket(implicit p: CoreParams) extends Bundle {
@@ -97,10 +98,13 @@ class Frontend(implicit p: CoreParams) extends Module {
   private def icacheGetBeat(addr: UInt): UInt =
     addr(p.icacheLineBits - 1, fetchBeatBits)
   val icValid = RegInit(0.U.asTypeOf(Vec(p.icacheWays, Vec(p.icacheSets, Bool()))))
-  val icTags = Seq.fill(p.icacheWays)(Module(new SRAMTemplate(new ICTag, p.icacheSets, singlePort = true)))
-  val icDatas = Seq.fill(p.icacheWays)(
-    Module(new SRAMTemplate(Vec(beatsPerLine, UInt(p.xlen.W)), p.icacheSets, singlePort = true))
+  val icTags = Seq.fill(p.icacheWays)(
+    Module(new SRAMTemplate(new ICTag, p.icacheSets, way = 1, singlePort = true, hasMbist = true))
   )
+  val icDatas = Seq.fill(p.icacheWays)(
+    Module(new SRAMTemplate(Vec(beatsPerLine, UInt(p.xlen.W)), p.icacheSets, way = 1, singlePort = true, hasMbist = true))
+  )
+  private val icMbistPipeline = MbistPipeline.PlaceMbistPipeline(1, "MbistPipelineWiredRVFrontend", place = true)
 
   class FetchResp extends Bundle {
     val pc = UInt(p.addrBits.W)
@@ -144,7 +148,7 @@ class Frontend(implicit p: CoreParams) extends Module {
   val readDataIdx = p.icacheGetSet(pc)
   val writeDataIdx = p.icacheGetSet(f2Inst.pc)
   val rDLast = rDCnt === (beatsPerLine - 1).U
-  val f2RefillEnd = rDLast && io.bus.d.fire
+  val f2RefillEnd = Wire(Bool())
 
   icTags.zipWithIndex.foreach { case (icTag, idx) =>
     icTag.io.r.req.valid := f0ReadFire
@@ -169,6 +173,11 @@ class Frontend(implicit p: CoreParams) extends Module {
     icData.io.w.req.valid := f2RefillEnd && (rSelWay === idx.U)
     icData.io.w.req.bits.apply(refillLineWrite, writeDataIdx, 1.U)
   }
+
+  val icSramReadReady = VecInit((icTags.map(_.io.r.req.ready) ++ icDatas.map(_.io.r.req.ready))).asUInt.andR
+  val icTagRefillWriteReady = VecInit(icTags.map(_.io.w.req.ready))(rSelWay)
+  val icDataRefillWriteReady = VecInit(icDatas.map(_.io.w.req.ready))(rSelWay)
+  val icRefillWriteReady = icTagRefillWriteReady && icDataRefillWriteReady
 
   val rawHits = icValid.zip(icTags).map { case (v, t) =>
     RegEnable(!(io.ifencei) && v(p.icacheGetSet(pc)), f0ReadFire) &&
@@ -217,7 +226,7 @@ class Frontend(implicit p: CoreParams) extends Module {
   frontStall := f2Hold || f2Refill
   val respFree = respQueueDepth.U - respQ.io.count - respInFlight
   val canIssueFetch = respFree =/= 0.U
-  f0ReadFire := !frontStall && !f2Refill && !f2RefillStart && canIssueFetch && !io.ifencei
+  f0ReadFire := !frontStall && !f2Refill && !f2RefillStart && canIssueFetch && icSramReadReady && !io.ifencei
   npcReady := f0ReadFire
   frontPredRedirect.valid := f1PredictJump
   frontPredRedirect.bits := f1PredictTarget
@@ -282,7 +291,8 @@ class Frontend(implicit p: CoreParams) extends Module {
   io.bus.a.bits.mask := Fill(fetchBeatBytes, 1.U(1.W))
   io.bus.a.bits.size := 6.U
   io.bus.a.bits.op := ReadOnly
-  io.bus.d.ready := f2Refill
+  io.bus.d.ready := f2Refill && (!rDLast || icRefillWriteReady)
+  f2RefillEnd := rDLast && io.bus.d.fire
 
   perf.cycles := perf.cycles + 1.U
   when(io.inst.fire) {

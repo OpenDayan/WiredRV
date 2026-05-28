@@ -142,7 +142,6 @@ class SimPerfPrinter extends BlackBox with HasBlackBoxInline {
     val backend_dBusAWait = Input(UInt(64.W))
     val backend_dBusDWait = Input(UInt(64.W))
     val backend_dBusDWaitRefill = Input(UInt(64.W))
-    val backend_dBusDWaitWriteThrough = Input(UInt(64.W))
     val backend_dBusDWaitUncached = Input(UInt(64.W))
     val backend_mulStart = Input(UInt(64.W))
     val backend_divStart = Input(UInt(64.W))
@@ -221,7 +220,6 @@ class SimPerfPrinter extends BlackBox with HasBlackBoxInline {
       |  input  [63:0] backend_dBusAWait,
       |  input  [63:0] backend_dBusDWait,
       |  input  [63:0] backend_dBusDWaitRefill,
-      |  input  [63:0] backend_dBusDWaitWriteThrough,
       |  input  [63:0] backend_dBusDWaitUncached,
       |  input  [63:0] backend_mulStart,
       |  input  [63:0] backend_divStart,
@@ -271,8 +269,8 @@ class SimPerfPrinter extends BlackBox with HasBlackBoxInline {
       |      backend_storeQueueEnq, backend_storeQueueDrain, backend_storeQueueOneEntryCycles,
       |      backend_storeQueueFullCycles, backend_uncachedCycles, backend_dBusAWait,
       |      backend_dBusDWait, backend_divBusyCycles);
-      |    $display("[perf] bus-detail dWaitRefill=%0d dWaitWriteThrough=%0d dWaitUncached=%0d",
-      |      backend_dBusDWaitRefill, backend_dBusDWaitWriteThrough, backend_dBusDWaitUncached);
+      |    $display("[perf] bus-detail dWaitRefill=%0d dWaitUncached=%0d",
+      |      backend_dBusDWaitRefill, backend_dBusDWaitUncached);
       |    $fflush();
       |  end
       |end
@@ -448,6 +446,17 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   core.io.debug := false.B
   core.io.time.valid := true.B
   core.io.time.bits := cycleCnt
+  core.io.dft.lgc_rst_n := true.B
+  core.io.dft.mode := false.B
+  core.io.dft.scan_mode := false.B
+  core.io.dft.cgen := false.B
+  core.io.dft.ram.hold := false.B
+  core.io.dft.ram.bypass := false.B
+  core.io.dft.ram.bp_clken := false.B
+  core.io.dft.ram.aux_clk := false.B
+  core.io.dft.ram.aux_ckbp := false.B
+  core.io.dft.ram.mcp_hold := false.B
+  core.io.ramctl.cfg := 0.U
   mem.io.axi <> core.io.mem
 
   val commitValid = core.io.diffCommitValid
@@ -602,7 +611,6 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   perfPrinter.io.backend_dBusAWait := core.io.backendPerf.dBusAWait
   perfPrinter.io.backend_dBusDWait := core.io.backendPerf.dBusDWait
   perfPrinter.io.backend_dBusDWaitRefill := core.io.backendPerf.dBusDWaitRefill
-  perfPrinter.io.backend_dBusDWaitWriteThrough := core.io.backendPerf.dBusDWaitWriteThrough
   perfPrinter.io.backend_dBusDWaitUncached := core.io.backendPerf.dBusDWaitUncached
   perfPrinter.io.backend_mulStart := core.io.backendPerf.mulStart
   perfPrinter.io.backend_divStart := core.io.backendPerf.divStart
