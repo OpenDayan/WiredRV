@@ -183,10 +183,15 @@ for raw in "${targets[@]}"; do
   parsed="$(parse_target "$raw")"
   suite="${parsed%%$'\t'*}"
   test="${parsed#*$'\t'}"
-  src="$ROOT/deps/riscv-tests/isa/$suite/$test.S"
+  local_src="$ROOT/tests/riscv-tests/wiredrv/isa/$suite/$test.S"
+  upstream_src="$ROOT/deps/riscv-tests/isa/$suite/$test.S"
+  src="$local_src"
+  if [[ ! -f "$src" ]]; then
+    src="$upstream_src"
+  fi
   name="$suite-$test"
   if [[ ! -f "$src" ]]; then
-    echo "test source not found: $src" >&2
+    echo "test source not found: $local_src or $upstream_src" >&2
     exit 1
   fi
   if [[ -n "${seen[$name]:-}" ]]; then
