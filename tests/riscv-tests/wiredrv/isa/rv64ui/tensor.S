@@ -17,6 +17,17 @@ RVTEST_CODE_BEGIN
   bnez t2, fail
 
   li TESTNUM, 2
+  li t2, 0x33333333
+
+  // 64-bit tensor: low half has opcode=0111111, rd=t2, rs1=t0, rs2=t1.
+  // The high half is jal x0, 0; it must be treated as data, not fetched as an
+  // independent instruction.
+  .word 0x006283bf
+  .word 0x0000006f
+
+  bnez t2, fail
+
+  li TESTNUM, 3
   addi t3, t2, 5
   li t4, 5
   bne t3, t4, fail

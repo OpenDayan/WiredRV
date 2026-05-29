@@ -11,6 +11,7 @@ import xs.utils.sram.SRAMTemplate
 class FetchPacket(implicit p: CoreParams) extends Bundle {
   val pc = UInt(p.addrBits.W)
   val inst = UInt(32.W)
+  val instWord = UInt(64.W)
   val jump = Bool()
   val target = UInt(p.addrBits.W)
 }
@@ -131,6 +132,9 @@ class Frontend(implicit p: CoreParams) extends Module {
   val f2Inst = RegInit(0.U.asTypeOf(new FetchPacket))
   val f2SkidV = RegInit(false.B)
   val f2Skid = RegInit(0.U.asTypeOf(new FetchPacket))
+  val tensor64Pending = RegInit(false.B)
+  val tensor64Pc = RegInit(0.U(p.addrBits.W))
+  val tensor64Low = RegInit(0.U(32.W))
 
   val rSelWay = RegInit(0.U(1.W))
   val rAValid = RegInit(false.B)
@@ -207,6 +211,9 @@ class Frontend(implicit p: CoreParams) extends Module {
   val f2RefillStart = !frontStall && f1Valid && !anyFlushRedir && !f1Hit
   val f2HitAccept = !frontStall && f1Valid && !anyFlushRedir && f1Hit
   respQ.io.deq.ready := f2HitAccept || f2RefillStart
+  val f1IsTensor64Low = f1Inst(6, 0) === "b0111111".U && !tensor64Pending
+  val f1Tensor64Complete = f2HitAccept && tensor64Pending
+  val f1EmitInst = f2HitAccept && !f1IsTensor64Low
   val f1IsJal = f1Inst(6, 0) === "b1101111".U
   val f1JalImm = Cat(Fill(p.addrBits - 21, f1Inst(31)), f1Inst(31), f1Inst(19, 12), f1Inst(20), f1Inst(30, 21), 0.U(1.W))
   val f1JalTarget = (f1CurPc + f1JalImm)(p.addrBits - 1, 0)
@@ -215,8 +222,9 @@ class Frontend(implicit p: CoreParams) extends Module {
   val f1BranchTarget = (f1CurPc + f1BranchImm)(p.addrBits - 1, 0)
   val f1BhtIdx = bhtIndex(f1CurPc)
   val f1BranchTakenPred = Mux(bhtValid(f1BhtIdx), bhtCtr(f1BhtIdx)(1), f1Inst(31))
-  val f1PredictJal = f2HitAccept && f1IsJal
-  val f1PredictBranch = f2HitAccept && f1IsBranch && f1BranchTakenPred
+  val f1CanPredict = f2HitAccept && !tensor64Pending && !f1IsTensor64Low
+  val f1PredictJal = f1CanPredict && f1IsJal
+  val f1PredictBranch = f1CanPredict && f1IsBranch && f1BranchTakenPred
   val f1PredictJump = f1PredictJal || f1PredictBranch
   val f1PredictTarget = Mux(f1PredictJal, f1JalTarget, f1BranchTarget)
   respQueueFlush := anyFlushRedir || f1PredictJump || io.ifencei
@@ -231,8 +239,18 @@ class Frontend(implicit p: CoreParams) extends Module {
   frontPredRedirect.valid := f1PredictJump
   frontPredRedirect.bits := f1PredictTarget
 
+  when(backRedir || f1PredictJump || io.ifencei) {
+    tensor64Pending := false.B
+  }.elsewhen(f2HitAccept && f1IsTensor64Low) {
+    tensor64Pending := true.B
+    tensor64Pc := f1CurPc
+    tensor64Low := f1Inst
+  }.elsewhen(f1Tensor64Complete) {
+    tensor64Pending := false.B
+  }
+
   when(!frontStall) {
-    f2Valid := f1Valid && !anyFlushRedir && f1Hit
+    f2Valid := f1EmitInst
     when(f2RefillStart) {
       f2Refill := true.B
       val missSet = f1CurSet
@@ -242,10 +260,15 @@ class Frontend(implicit p: CoreParams) extends Module {
       rRValid := true.B
       rDCnt := 0.U
     }
-    f2Inst.pc := f1CurPc
-    f2Inst.inst := f1Inst
+    f2Inst.pc := Mux(f1Tensor64Complete, tensor64Pc, f1CurPc)
+    f2Inst.inst := Mux(f1Tensor64Complete, tensor64Low, f1Inst)
+    f2Inst.instWord := Mux(f1Tensor64Complete, Cat(f1Inst, tensor64Low), Cat(0.U(32.W), f1Inst))
     f2Inst.jump := f1PredictJump
-    f2Inst.target := f1PredictTarget
+    f2Inst.target := Mux(
+      f1Tensor64Complete,
+      (tensor64Pc + 8.U)(p.addrBits - 1, 0),
+      f1PredictTarget
+    )
     when(f2Valid) {
       f2SkidV := !io.inst.ready && !backRedir
       f2Skid := f2Inst

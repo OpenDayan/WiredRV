@@ -61,8 +61,8 @@ class Decode(implicit p: CoreParams) extends Module {
   info.rs1en := decodeBits(0) === SrcType.reg
   info.rs2en := decodeBits(1) === SrcType.reg
   info.rden := info.rwen
-  info.isRVT64 := true.B
-  info.isRVT32 := false.B
+  info.isRVT32 := inst(6, 0) === "b0001011".U
+  info.isRVT64 := inst(6, 0) === "b0111111".U
   info.isLsu := decodeBits(2) === FuType.lsu
   info.isAlu := decodeBits(2) === FuType.alu
   info.isStore := info.isLsu && LSUOp.isStore(decodeBits(3))

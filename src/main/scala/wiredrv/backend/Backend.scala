@@ -33,6 +33,7 @@ class CoreCsrState(implicit p: CoreParams) extends Bundle {
 class BackendUop(implicit p: CoreParams) extends Bundle {
   val pc = UInt(p.addrBits.W)
   val inst = UInt(32.W)
+  val instWord = UInt(64.W)
   val predictedJump = Bool()
   val predictedTarget = UInt(p.addrBits.W)
   val info = new DecodeInfo
@@ -816,6 +817,7 @@ class Backend(implicit p: CoreParams) extends Module {
   }
   d_make_uop.pc := d_pc
   d_make_uop.inst := d_inst
+  d_make_uop.instWord := io.inst.bits.instWord
   d_make_uop.predictedJump := io.inst.bits.jump
   d_make_uop.predictedTarget := io.inst.bits.target
   d_make_uop.info := d_uop_info
@@ -1056,7 +1058,7 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val w_tensor_issue = w_can_commit && !w_trap && !w_mret_commit && w_is_tensor
   tensorIssueQueue.io.enq.valid := w_tensor_issue
-  tensorIssueQueue.io.enq.bits.instWord := Cat(0.U(32.W), w_uop.inst)
+  tensorIssueQueue.io.enq.bits.instWord := w_uop.instWord
   tensorIssueQueue.io.enq.bits.rs1Data := w_uop.src1
   tensorIssueQueue.io.enq.bits.rs2Data := w_uop.src2
   tensorIssueQueue.io.enq.bits.rdData := w_uop.rdData
@@ -1075,6 +1077,7 @@ class Backend(implicit p: CoreParams) extends Module {
   io.commit.valid := w_commit_valid
   io.commit.bits.pc := w_uop.pc
   io.commit.bits.inst := w_uop.inst
+  io.commit.bits.instWord := w_uop.instWord
   io.commit.bits.jump := w_uop.predictedJump || w_redirect.valid
   io.commit.bits.target := Mux(w_uop.predictedJump, w_uop.predictedTarget, w_redirect.bits)
 
@@ -1788,6 +1791,7 @@ class Backend(implicit p: CoreParams) extends Module {
       io.commit.valid := true.B
       io.commit.bits.pc := m_pc
       io.commit.bits.inst := m_inst
+      io.commit.bits.instWord := Cat(0.U(32.W), m_inst)
       io.commit.bits.jump := true.B
       io.commit.bits.target := (m_pc + 4.U)(p.addrBits - 1, 0)
 
@@ -1902,6 +1906,7 @@ class Backend(implicit p: CoreParams) extends Module {
       io.commit.valid := true.B
       io.commit.bits.pc := u_pc
       io.commit.bits.inst := u_inst
+      io.commit.bits.instWord := Cat(0.U(32.W), u_inst)
       io.commit.bits.jump := true.B
       io.commit.bits.target := (u_pc + 4.U)(p.addrBits - 1, 0)
 
