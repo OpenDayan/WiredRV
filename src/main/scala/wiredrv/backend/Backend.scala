@@ -49,6 +49,7 @@ class BackendUop(implicit p: CoreParams) extends Bundle {
   val src1 = UInt(p.xlen.W)
   val src2 = UInt(p.xlen.W)
   val store_data = UInt(p.xlen.W)
+  val rdData = UInt(p.xlen.W)
   val src1_forward_w = Bool()
   val src2_forward_w = Bool()
   val store_forward_w = Bool()
@@ -132,6 +133,10 @@ object UncachedState {
   val idle :: sendA :: recvD :: Nil = Enum(3)
 }
 
+object MisalignedState {
+  val idle :: readSecondReq :: readSecondResp :: busCheck :: busSend :: busRecv :: Nil = Enum(6)
+}
+
 class Backend(implicit p: CoreParams) extends Module {
   require(p.xlen == 64, "Backend currently implements RV64 data path")
   require(p.innerBusWidth == 32, "Backend refill path expects the 32-bit inner bus")
@@ -145,6 +150,8 @@ class Backend(implicit p: CoreParams) extends Module {
     val meip = Input(Bool())
     val debug = Input(Bool())
     val time = Input(Valid(UInt(64.W)))
+    val tensorInst = Decoupled(new TensorInst)
+    val tensorResp = Flipped(Decoupled(new TensorResp))
     val redirects = Output(Vec(3, Valid(UInt(p.addrBits.W))))
     val branchUpdate = Output(Valid(new BranchUpdate))
     val ifencei = Output(Bool())
@@ -397,6 +404,9 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_load_data = RegInit(0.U(p.xlen.W))
   val w_store_entry = RegInit(0.U.asTypeOf(new StoreQueueEntry))
   val w_hit = RegInit(false.B)
+  val w_lookup_hit = RegInit(false.B)
+  val w_lookup_way = RegInit(0.U(log2Ceil(p.dcacheWays).W))
+  val w_cache_word = RegInit(0.U(p.xlen.W))
   val w_hit_way = RegInit(0.U(log2Ceil(p.dcacheWays).W))
   val w_replace_way = RegInit(0.U(log2Ceil(p.dcacheWays).W))
   val w_miss = RegInit(false.B)
@@ -407,12 +417,17 @@ class Backend(implicit p: CoreParams) extends Module {
   val v_gpr = RegInit(VecInit(Seq.fill(p.longLatencySlots)(0.U(5.W))))
   val div_wb_pending_valid = RegInit(false.B)
   val div_wb_pending = RegInit(0.U.asTypeOf(new MduWriteback))
+  val tensorBusy = RegInit(false.B)
+  val tensorRd = RegInit(0.U(5.W))
+  val tensorHasVslot = RegInit(false.B)
+  val tensorVslot = RegInit(0.U(p.longLatencySlotsBits.W))
 
   val vAllocator = Module(new SBAllocator)
   val alu = Module(new ALU)
   val mulPipe = Module(new MulPipeline)
   val divUnit = Module(new DivUnit)
   val decoder = Module(new Decode)
+  val tensorIssueQueue = Module(new Queue(new TensorInst, entries = 1))
 
   val dc_valid = RegInit(0.U.asTypeOf(Vec(p.dcacheWays, Vec(p.dcacheSets, Bool()))))
   val dc_tags = Seq.fill(p.dcacheWays)(
@@ -464,6 +479,30 @@ class Backend(implicit p: CoreParams) extends Module {
   val u_byte_mode = RegInit(false.B)
   val u_byte_idx = RegInit(0.U(byteIdxBits.W))
   val u_byte_count = RegInit(1.U(byteCountBits.W))
+  val m_state = RegInit(MisalignedState.idle)
+  val m_pc = RegInit(0.U(p.addrBits.W))
+  val m_inst = RegInit(0.U(32.W))
+  val m_addr = RegInit(0.U(p.addrBits.W))
+  val m_op = RegInit(LSUOp.none)
+  val m_rd = RegInit(0.U(5.W))
+  val m_vslot = RegInit(0.U(p.longLatencySlotsBits.W))
+  val m_vslot_valid = RegInit(false.B)
+  val m_is_load = RegInit(false.B)
+  val m_is_store = RegInit(false.B)
+  val m_byte_count = RegInit(1.U(byteCountBits.W))
+  val m_byte_idx = RegInit(0.U(byteCountBits.W))
+  val m_store_data = RegInit(0.U(p.xlen.W))
+  val m_load_word = RegInit(0.U(p.xlen.W))
+  val m_word0_addr = RegInit(0.U(p.addrBits.W))
+  val m_word1_addr = RegInit(0.U(p.addrBits.W))
+  val m_word0_hit = RegInit(false.B)
+  val m_word1_hit = RegInit(false.B)
+  val m_word0_way = RegInit(0.U(log2Ceil(p.dcacheWays).W))
+  val m_word1_way = RegInit(0.U(log2Ceil(p.dcacheWays).W))
+  val m_word0_data = RegInit(0.U(p.xlen.W))
+  val m_word1_data = RegInit(0.U(p.xlen.W))
+  val m_need_second = RegInit(false.B)
+  val m_bus_a_valid = RegInit(false.B)
   val simUartValid = RegInit(false.B)
   val simUartBits = Reg(UInt(8.W))
 
@@ -476,11 +515,15 @@ class Backend(implicit p: CoreParams) extends Module {
   val v_rfen = WireDefault(false.B)
   val v_rf = WireDefault(0.U(5.W))
   val v_rfdata = WireDefault(0.U(p.xlen.W))
+  val tensorRespReady = WireDefault(false.B)
+  val tensorRespFire = io.tensorResp.valid && tensorRespReady
 
   val e_release_vslot = WireDefault(false.B)
   val e_release_slot = WireDefault(0.U(p.longLatencySlotsBits.W))
   val u_release_vslot = WireDefault(false.B)
   val u_release_slot = WireDefault(0.U(p.longLatencySlotsBits.W))
+  val m_release_vslot = WireDefault(false.B)
+  val m_release_slot = WireDefault(0.U(p.longLatencySlotsBits.W))
   val w_cancel_release_vslot = WireDefault(false.B)
   val w_cancel_release_slot = WireDefault(0.U(p.longLatencySlotsBits.W))
   val v_release_vslot = WireDefault(false.B)
@@ -495,6 +538,11 @@ class Backend(implicit p: CoreParams) extends Module {
   val dc_data_w_data = Wire(Vec(p.dcacheWays, UInt(p.xlen.W)))
   val dc_data_w_idx = Wire(Vec(p.dcacheWays, UInt(dataIdxBits.W)))
   val dc_data_w_mask = Wire(Vec(p.dcacheWays, UInt(p.xlen.W)))
+  val m_store_commit = WireDefault(false.B)
+  val m_store_entry0_valid = WireDefault(false.B)
+  val m_store_entry1_valid = WireDefault(false.B)
+  val m_store_entry0 = WireDefault(0.U.asTypeOf(new StoreQueueEntry))
+  val m_store_entry1 = WireDefault(0.U.asTypeOf(new StoreQueueEntry))
 
   for (i <- 0 until p.dcacheWays) {
     dc_tag_w_data(i) := 0.U.asTypeOf(new DCTag)
@@ -518,6 +566,10 @@ class Backend(implicit p: CoreParams) extends Module {
   io.bus.a.valid := false.B
   io.bus.a.bits := 0.U.asTypeOf(io.bus.a.bits)
   io.bus.d.ready := false.B
+  io.tensorResp.ready := tensorRespReady
+  io.tensorInst <> tensorIssueQueue.io.deq
+  tensorIssueQueue.io.enq.valid := false.B
+  tensorIssueQueue.io.enq.bits := 0.U.asTypeOf(new TensorInst)
 
   io.commit.valid := false.B
   io.commit.bits := 0.U.asTypeOf(new FetchPacket)
@@ -554,14 +606,15 @@ class Backend(implicit p: CoreParams) extends Module {
   io.simUart.bits := simUartBits
 
   vAllocator.io.allocate.ready := false.B
-  val release0_normal_valid = e_release_vslot || u_release_vslot
+  val release0_normal_valid = e_release_vslot || u_release_vslot || m_release_vslot
   val release0_pending_valid = cancel_release_pending_valid
   val release0_cancel_direct = w_cancel_release_vslot && !release0_normal_valid && !release0_pending_valid
   vAllocator.io.release(0).valid := release0_normal_valid || release0_pending_valid || release0_cancel_direct
   vAllocator.io.release(0).bits := Mux(
     u_release_vslot,
     u_release_slot,
-    Mux(e_release_vslot, e_release_slot, Mux(release0_pending_valid, cancel_release_pending_slot, w_cancel_release_slot))
+    Mux(m_release_vslot, m_release_slot,
+      Mux(e_release_vslot, e_release_slot, Mux(release0_pending_valid, cancel_release_pending_slot, w_cancel_release_slot)))
   )
   vAllocator.io.release(1).valid := v_release_vslot
   vAllocator.io.release(1).bits := v_release_slot
@@ -617,8 +670,10 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val d_rs1_rf = rfRead(d_rs1)
   val d_rs2_rf = rfRead(d_rs2)
+  val d_rd_rf = rfRead(d_rd)
   val d_rs1_data = dForward(d_rs1, d_rs1_rf)
   val d_rs2_data = dForward(d_rs2, d_rs2_rf)
+  val d_rd_data = dForward(d_rd, d_rd_rf)
 
   def eForward(sel: Bool, data: UInt): UInt =
     Mux(sel && w_rfen, w_rfdata, data)
@@ -650,6 +705,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_is_cmo = d_dec.info.isLsu && isCmoOp(d_dec.info.fuOpType)
   val d_is_load = d_dec.info.isLsu && !d_dec.info.isStore && !d_is_cmo
   val d_is_store = d_dec.info.isStore
+  val d_is_tensor = d_dec.info.fuType === FuType.tensor
   val d_is_fence = d_inst(6, 0) === "b0001111".U && d_inst(14, 12) === "b000".U
   val d_is_nemu_trap = d_inst === RV64IInstructions.NEMU_TRAP.value.U
   val d_load_misaligned = d_is_load && loadNeedsAlign(d_dec.info.fuOpType, d_lsu_addr)
@@ -667,12 +723,16 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_exception_valid = d_dec.exceptionValid || d_jump_target_misaligned
   val d_exception_code = Mux(d_jump_target_misaligned, 0.U(16.W), d_dec.exceptionCode)
   val d_is_uncached = d_dec.info.isLsu && !d_is_cmo && inRegions(d_lsu_addr, p.uncachedRegions)
-  val d_cache_access = d_dec.info.isLsu && !d_is_uncached && !d_lsu_misaligned
+  val d_cache_lookup = d_dec.info.isLsu && !d_is_uncached && !d_is_cmo
+  val d_cache_access = d_cache_lookup && !d_lsu_misaligned
   val d_is_mext_long_latency = d_dec.info.fuType === FuType.mdu
   val d_is_div = d_is_mext_long_latency && MduCalc.isDivOp(d_dec.info.fuOpType)
-  val d_need_vslot_raw = d_is_uncached || d_lsu_misaligned || (d_is_mext_long_latency && d_writes_rd)
+  val d_need_vslot_raw = d_is_uncached || d_lsu_misaligned ||
+    ((d_is_mext_long_latency || d_is_tensor) && d_writes_rd)
   val e_is_div = e_valid && !e_uop.flushed && e_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(e_uop.info.fuOpType)
   val w_is_div_pipe = w_valid && !w_uop.flushed && w_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(w_uop.info.fuOpType)
+  val e_is_tensor_pipe = e_valid && !e_uop.flushed && !e_killed_by_w && e_uop.info.fuType === FuType.tensor
+  val w_is_tensor_pipe = w_valid && !w_uop.flushed && w_uop.info.fuType === FuType.tensor
   val e_result_forwardable_to_w =
     e_valid && !e_uop.flushed && !e_killed_by_w &&
       !e_uop.vslot_valid && e_uop.info.rwen && nonZeroReg(e_uop.rd) &&
@@ -688,16 +748,18 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_rs2_e_forwardable = d_uses_rs2 && hitEForwardable(d_rs2)
   val d_rs1_e_haz = d_rs1_e_raw_haz && !d_lsu_base_e_forward && !(d_rs1_e_forwardable && !d_dec.info.isLsu)
   val d_rs2_e_haz = d_uses_rs2 && hitE(d_rs2) && !d_rs2_e_forwardable
-  val d_e_raw_haz = d_rs1_e_haz || d_rs2_e_haz
+  val d_tensor_rd_e_haz = d_is_tensor && nonZeroReg(d_rd) && hitE(d_rd)
+  val d_e_raw_haz = d_rs1_e_haz || d_rs2_e_haz || d_tensor_rd_e_haz
   val d_rs1_w_haz = d_uses_rs1 && nonZeroReg(d_rs1) && wGpr === d_rs1
   val d_rs2_w_haz = d_uses_rs2 && nonZeroReg(d_rs2) && wGpr === d_rs2
   val d_w_raw_haz = d_rs1_w_haz || d_rs2_w_haz
   val d_lsu_base_not_ready = d_dec.info.isLsu && d_rs1_e_raw_haz && !d_lsu_base_e_forward
   val d_jr_not_ready = d_is_jalr && d_uses_rs1 && (hitE(d_rs1) || (hitVar(d_rs1) && !longWbHit(d_rs1)))
   val d_no_vslot = d_need_vslot_raw && !vAllocator.io.allocate.valid
+  val d_tensor_busy = d_is_tensor && (tensorBusy || e_is_tensor_pipe || w_is_tensor_pipe || !tensorIssueQueue.io.enq.ready)
   val d_div_resource_busy = d_is_div && d_writes_rd &&
     (e_is_div || w_is_div_pipe || divUnit.io.busy || div_wb_pending_valid)
-  val d_cache_busy = r_state =/= DCacheRefillState.idle
+  val d_cache_busy = (r_state =/= DCacheRefillState.idle) || (m_state =/= MisalignedState.idle)
   val d_uncached_busy = u_state =/= UncachedState.idle
   val d_inflight_store_wait =
     (e_valid && !e_uop.flushed && !e_killed_by_w && e_uop.info.isStore) ||
@@ -728,7 +790,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_stall =
     d_rs1_var_haz || d_rs2_var_haz || d_rd_var_haz ||
       d_e_raw_haz || d_lsu_base_not_ready || d_jr_not_ready ||
-      d_no_vslot || d_div_resource_busy || d_cache_busy || d_uncached_busy ||
+      d_no_vslot || d_tensor_busy || d_div_resource_busy || d_cache_busy || d_uncached_busy ||
       d_store_queue_wait || d_fence_wait || d_misaligned_wait || d_nemu_trap_wait
 
   io.inst.ready := !d_stall
@@ -768,6 +830,7 @@ class Backend(implicit p: CoreParams) extends Module {
   d_make_uop.src1 := Mux(d_dec.info.isLsu && d_dec.info.rs1en, d_lsu_base_data, d_src1)
   d_make_uop.src2 := d_src2
   d_make_uop.store_data := d_rs2_data
+  d_make_uop.rdData := d_rd_data
   d_make_uop.src1_forward_w := !d_dec.info.isLsu && d_dec.info.src1Type === SrcType.reg && d_rs1_e_forwardable
   d_make_uop.src2_forward_w := d_dec.info.src2Type === SrcType.reg && d_rs2_e_forwardable
   d_make_uop.store_forward_w := d_dec.info.rs2en && d_rs2_e_forwardable
@@ -782,8 +845,8 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val d_dcache_set = p.dcacheGetSet(d_lsu_addr)
   val d_dcache_idx = dcacheDataIdx(d_lsu_addr)
-  val d_read_tag = d_enqueue && !d_interrupt_take && d_cache_access && !d_lsu_misaligned
-  val d_read_data = d_enqueue && !d_interrupt_take && d_is_load && !d_is_uncached && !d_lsu_misaligned
+  val d_read_tag = d_enqueue && !d_interrupt_take && d_cache_lookup
+  val d_read_data = d_enqueue && !d_interrupt_take && d_is_load && !d_is_uncached && !d_is_cmo
   for (i <- 0 until p.dcacheWays) {
     dc_tags(i).io.r.req.valid := d_read_tag
     dc_tags(i).io.r.req.bits.apply(d_dcache_set)
@@ -841,7 +904,9 @@ class Backend(implicit p: CoreParams) extends Module {
     dc_valid(i)(e_set) && dc_tags(i).io.r.resp.data(0).tag === e_tag
   })
   val e_raw_hit = e_way_hits.asUInt.orR
-  val e_hit = e_can_side_effect && e_uop.info.isLsu && !e_lsu_bypass && !e_exception && e_raw_hit
+  val e_cache_lookup = e_can_side_effect && e_uop.info.isLsu && !e_is_uncached && !e_is_cmo && !e_exception
+  val e_lookup_hit = e_cache_lookup && e_raw_hit
+  val e_hit = e_cache_lookup && !e_lsu_misaligned && e_raw_hit
   val e_hit_way = PriorityEncoder(e_way_hits)
   val e_replace_way = next_replace_way
   val e_hit_tag = Mux(e_hit_way === 0.U, dc_tags(0).io.r.resp.data(0), dc_tags(1).io.r.resp.data(0))
@@ -934,6 +999,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_load_misaligned = w_is_load && loadNeedsAlign(w_uop.info.fuOpType, w_lsu_addr)
   val w_store_misaligned = w_is_store && storeNeedsAlign(w_uop.info.fuOpType, w_lsu_addr)
   val w_lsu_misaligned = w_load_misaligned || w_store_misaligned
+  val w_cached_misaligned = w_lsu_misaligned && !w_is_uncached
   val w_lsu_bypass = w_is_uncached || w_lsu_misaligned
   val w_is_fence_i = w_uop.inst === RV64IInstructions.FENCE_I.value.U
   val w_is_mret = w_uop.info.fuType === FuType.csr && w_uop.info.fuOpType === CsrOp.mret
@@ -941,13 +1007,15 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_flush_pipe = w_can_commit && !w_trap && !w_mret_commit && w_uop.info.flushPipe
   val w_store_commit = w_can_commit && !w_lsu_bypass && w_is_store && w_hit && !w_miss && !w_trap
   val w_bus_available =
-    r_state === DCacheRefillState.idle && u_state === UncachedState.idle
+    r_state === DCacheRefillState.idle && u_state === UncachedState.idle && m_state === MisalignedState.idle
   val w_start_refill = w_can_commit && !w_trap && !w_lsu_bypass && w_miss && !sq_has_entry &&
     w_bus_available
   val w_start_cmo = w_can_commit && !w_trap && !w_lsu_bypass && w_is_cmo && !sq_has_entry &&
     w_bus_available
-  val w_start_uncached = w_can_commit && w_lsu_bypass && !w_trap && w_bus_available
+  val w_start_cached_misaligned = w_can_commit && w_cached_misaligned && !w_trap && w_bus_available
+  val w_start_uncached = w_can_commit && w_is_uncached && !w_trap && w_bus_available
   val w_is_mdu = w_uop.info.fuType === FuType.mdu
+  val w_is_tensor = w_uop.info.fuType === FuType.tensor
   val w_mdu_needs_wb = w_uop.vslot_valid && nonZeroReg(w_uop.rd)
   val w_mdu_can_start = w_can_commit && w_is_mdu && w_mdu_needs_wb && !w_trap && !w_miss
   val w_mdu_is_mul = MduCalc.isMulOp(w_uop.info.fuOpType)
@@ -978,15 +1046,26 @@ class Backend(implicit p: CoreParams) extends Module {
   assert(!(w_mdu_can_start && w_mdu_is_div && (divUnit.io.busy || div_wb_pending_valid)),
     "DivUnit accepted a second request while busy")
 
-  w_redirect.valid := w_can_commit && (w_miss || w_is_cmo || w_trap || w_mret_commit || w_flush_pipe || w_start_uncached)
+  w_redirect.valid := w_can_commit &&
+    (w_miss || w_is_cmo || w_trap || w_mret_commit || w_flush_pipe || w_start_cached_misaligned || w_start_uncached)
   w_redirect.bits := Mux(
     w_trap,
     w_trap_vector,
     Mux(w_mret_commit, mepc(p.addrBits - 1, 0), Mux(w_miss, w_uop.pc, (w_uop.pc + 4.U)(p.addrBits - 1, 0)))
   )
 
+  val w_tensor_issue = w_can_commit && !w_trap && !w_mret_commit && w_is_tensor
+  tensorIssueQueue.io.enq.valid := w_tensor_issue
+  tensorIssueQueue.io.enq.bits.instWord := Cat(0.U(32.W), w_uop.inst)
+  tensorIssueQueue.io.enq.bits.rs1Data := w_uop.src1
+  tensorIssueQueue.io.enq.bits.rs2Data := w_uop.src2
+  tensorIssueQueue.io.enq.bits.rdData := w_uop.rdData
+  assert(!w_tensor_issue || tensorIssueQueue.io.enq.ready,
+    "Tensor issue queue was full at commit")
+
   w_rfdata := Mux(w_is_load, w_load_data, Mux(w_uop.info.fuType === FuType.jmp, w_uop.pc + 4.U, w_result))
-  w_rfen := w_can_commit && !w_trap && !w_mret_commit && w_uop.info.rwen && nonZeroReg(w_uop.rd) && !w_miss && !w_lsu_bypass && !w_is_mdu
+  w_rfen := w_can_commit && !w_trap && !w_mret_commit && w_uop.info.rwen &&
+    nonZeroReg(w_uop.rd) && !w_miss && !w_lsu_bypass && !w_is_mdu && !w_is_tensor
   val w_diff_rfwen = w_can_commit && !w_trap && !w_mret_commit && w_uop.info.rwen && nonZeroReg(w_uop.rd) && !w_miss && !w_lsu_bypass
 
   io.ifencei := w_flush_pipe && w_is_fence_i && !w_miss
@@ -1006,7 +1085,7 @@ class Backend(implicit p: CoreParams) extends Module {
   io.diffCommitRd := w_uop.rd
   io.diffCommitIsLoad := w_is_load
   io.diffCommitIsStore := w_is_store
-  io.diffCommitIsDelayedWb := w_diff_rfwen && w_is_mdu
+  io.diffCommitIsDelayedWb := w_diff_rfwen && (w_is_mdu || w_is_tensor)
   io.diffTrapValid := w_trap
   io.diffTrapIsInterrupt := w_uop.isInterrupt
   io.diffTrapCode := w_trap_code_xlen
@@ -1033,16 +1112,25 @@ class Backend(implicit p: CoreParams) extends Module {
   w_cancel_release_vslot := w_valid && w_uop.flushed && w_uop.vslot_valid
   w_cancel_release_slot := w_uop.vslot
   val w_release_vslot =
-    (w_start_refill || (w_can_commit && w_is_mdu && w_trap)) && w_uop.vslot_valid
+    (w_start_refill || (w_can_commit && (w_is_mdu || w_is_tensor) && w_trap)) && w_uop.vslot_valid
 
-  v_release_vslot := long_wb_valid || w_release_vslot
-  v_release_slot := Mux(long_wb_valid, long_wb_bits.vslot, w_uop.vslot)
-  v_rfen := long_wb_valid && nonZeroReg(long_wb_bits.rd)
-  v_rf := long_wb_bits.rd
-  v_rfdata := long_wb_bits.data
-  io.diffDelayedWbValid := long_wb_valid && nonZeroReg(long_wb_bits.rd)
-  io.diffDelayedWbRd := long_wb_bits.rd
-  io.diffDelayedWbData := long_wb_bits.data
+  tensorRespReady := tensorBusy && !long_wb_valid && !w_release_vslot &&
+    u_state === UncachedState.idle && m_state === MisalignedState.idle
+  val tensor_wb_valid = tensorRespFire && nonZeroReg(io.tensorResp.bits.rd)
+  val tensor_release_vslot = tensorRespFire && tensorHasVslot
+
+  v_release_vslot := long_wb_valid || tensor_release_vslot || w_release_vslot
+  v_release_slot := Mux(
+    long_wb_valid,
+    long_wb_bits.vslot,
+    Mux(tensor_release_vslot, tensorVslot, w_uop.vslot)
+  )
+  v_rfen := (long_wb_valid && nonZeroReg(long_wb_bits.rd)) || tensor_wb_valid
+  v_rf := Mux(long_wb_valid, long_wb_bits.rd, io.tensorResp.bits.rd)
+  v_rfdata := Mux(long_wb_valid, long_wb_bits.data, io.tensorResp.bits.data)
+  io.diffDelayedWbValid := (long_wb_valid && nonZeroReg(long_wb_bits.rd)) || tensor_wb_valid
+  io.diffDelayedWbRd := Mux(long_wb_valid, long_wb_bits.rd, io.tensorResp.bits.rd)
+  io.diffDelayedWbData := Mux(long_wb_valid, long_wb_bits.data, io.tensorResp.bits.data)
 
   val diff_rf = Wire(Vec(32, UInt(p.xlen.W)))
   for (i <- 0 until 32) {
@@ -1092,6 +1180,19 @@ class Backend(implicit p: CoreParams) extends Module {
   io.diffCsr.mip := diffMip
   io.diffCsr.mie := diffMie
   io.diffCsr.mscratch := diffMscratch
+
+  when(w_tensor_issue) {
+    tensorBusy := true.B
+    tensorRd := w_uop.rd
+    tensorHasVslot := w_uop.vslot_valid && nonZeroReg(w_uop.rd)
+    tensorVslot := w_uop.vslot
+  }
+  when(tensorRespFire) {
+    assert(io.tensorResp.bits.rd === tensorRd,
+      "Tensor response rd did not match the outstanding Tensor request")
+    tensorBusy := false.B
+    tensorHasVslot := false.B
+  }
 
   when(v_rfen && nonZeroReg(v_rf)) {
     rf(v_rf) := v_rfdata
@@ -1211,9 +1312,9 @@ class Backend(implicit p: CoreParams) extends Module {
   val sq_drain_entry = Mux(sq_drain_sel === 0.U, store_queue(0), store_queue(1))
   val sq_pipeline_lsu_busy = (e_can_side_effect && e_uop.info.isLsu) || (w_can_commit && w_uop.info.isLsu)
   val sq_can_drain =
-    r_state === DCacheRefillState.idle && u_state === UncachedState.idle &&
+    r_state === DCacheRefillState.idle && u_state === UncachedState.idle && m_state === MisalignedState.idle &&
       !sq_pipeline_lsu_busy && !d_read_tag && !d_read_data &&
-      !w_start_refill && !w_start_cmo && !w_start_uncached
+      !w_start_refill && !w_start_cmo && !w_start_cached_misaligned && !w_start_uncached
   val sq_drain = sq_can_drain && sq_has_entry
 
   when(sq_drain) {
@@ -1265,9 +1366,30 @@ class Backend(implicit p: CoreParams) extends Module {
       assert(false.B, "Store Queue overflow")
     }
   }
-  store_queue := sq_final
+  val sq_with_misaligned = WireDefault(sq_final)
+  when(m_store_commit) {
+    assert(!sq_final(0).valid && !sq_final(1).valid,
+      "Misaligned cached store expected an empty Store Queue")
+    when(m_store_entry0_valid) {
+      sq_with_misaligned(0) := m_store_entry0
+      sq_with_misaligned(0).valid := true.B
+    }
+    when(m_store_entry1_valid) {
+      when(m_store_entry0_valid) {
+        sq_with_misaligned(1) := m_store_entry1
+        sq_with_misaligned(1).valid := true.B
+      }.otherwise {
+        sq_with_misaligned(0) := m_store_entry1
+        sq_with_misaligned(0).valid := true.B
+      }
+    }
+  }
+  store_queue := sq_with_misaligned
   when(w_store_commit) {
     perf.storeQueueEnq := perf.storeQueueEnq + 1.U
+  }
+  when(m_store_commit && (m_store_entry0_valid || m_store_entry1_valid)) {
+    perf.storeQueueEnq := perf.storeQueueEnq + PopCount(Seq(m_store_entry0_valid, m_store_entry1_valid))
   }
   when(sq_drain) {
     perf.storeQueueDrain := perf.storeQueueDrain + 1.U
@@ -1310,37 +1432,49 @@ class Backend(implicit p: CoreParams) extends Module {
   val u_bus_size = Mux(u_byte_mode, log2Ceil(busBytes).U, u_normal_bus_size)
   val u_last_beat = Mux(u_byte_mode, Cat(0.U(1.W), u_byte_idx) === u_byte_count - 1.U, u_beat === (u_beats - 1.U))
   val u_complete_can_write = !long_wb_valid
+  val m_send = m_state === MisalignedState.busSend
+  val m_recv = m_state === MisalignedState.busRecv
+  val m_byte_addr = (m_addr + m_byte_idx)(p.addrBits - 1, 0)
+  val m_byte_lane = m_byte_addr(busOffsetBits - 1, 0)
+  val m_byte_uses_word1 = m_need_second && sameWordAddr(m_byte_addr, m_word1_addr)
+  val m_byte_cache_hit = Mux(m_byte_uses_word1, m_word1_hit, m_word0_hit)
+  val m_byte_needs_bus = m_byte_idx < m_byte_count && !m_byte_cache_hit
+  val m_bus_addr = Cat(m_byte_addr(p.addrBits - 1, busOffsetBits), 0.U(busOffsetBits.W))
+  val m_store_byte = (m_store_data >> (m_byte_idx << 3))(7, 0)
+  val m_bus_data = (Cat(0.U((p.innerBusWidth - 8).W), m_store_byte) << (m_byte_lane << 3))(p.innerBusWidth - 1, 0)
+  val m_bus_mask = (1.U(busBytes.W) << m_byte_lane)(busBytes - 1, 0)
 
   val r_uses_bus = r_state =/= DCacheRefillState.idle
+  val m_uses_bus = m_send || m_recv
   io.bus.a.valid := Mux(
     r_uses_bus,
     (r_send_read || r_send_write) && r_a_valid,
-    u_send && u_a_valid
+    Mux(m_uses_bus, m_send && m_bus_a_valid, u_send && u_a_valid)
   )
   io.bus.a.bits.op := Mux(
     r_uses_bus,
     Mux(r_send_write, StoreOnly, ReadOnly),
-    Mux(u_is_store, StoreOnly, ReadOnly)
+    Mux(m_uses_bus, Mux(m_is_store, StoreOnly, ReadOnly), Mux(u_is_store, StoreOnly, ReadOnly))
   )
   io.bus.a.bits.id := 1.U
   io.bus.a.bits.size := Mux(
     r_uses_bus,
     Mux(r_send_write, log2Ceil(busBytes).U, log2Ceil(p.dcacheLineBytes).U),
-    u_bus_size
+    Mux(m_uses_bus, log2Ceil(busBytes).U, u_bus_size)
   )
   io.bus.a.bits.address := Mux(
     r_uses_bus,
     Mux(r_send_write, r_write_beat_addr, r_line_addr),
-    u_bus_addr
+    Mux(m_uses_bus, m_bus_addr, u_bus_addr)
   )
-  io.bus.a.bits.mask := Mux(r_uses_bus, Fill(busBytes, 1.U), u_bus_mask)
-  io.bus.a.bits.data := Mux(r_uses_bus, r_write_beat_data, u_bus_data)
+  io.bus.a.bits.mask := Mux(r_uses_bus, Fill(busBytes, 1.U), Mux(m_uses_bus, m_bus_mask, u_bus_mask))
+  io.bus.a.bits.data := Mux(r_uses_bus, r_write_beat_data, Mux(m_uses_bus, m_bus_data, u_bus_data))
   io.bus.d.ready := Mux(
     r_uses_bus,
     r_state === DCacheRefillState.recvD || r_send_write,
-    u_recv && (!u_last_beat || u_complete_can_write)
+    Mux(m_uses_bus, m_recv, u_recv && (!u_last_beat || u_complete_can_write))
   )
-  val d_bus_d_expected = Mux(r_uses_bus, r_state === DCacheRefillState.recvD || r_send_write, u_recv)
+  val d_bus_d_expected = Mux(r_uses_bus, r_state === DCacheRefillState.recvD || r_send_write, Mux(m_uses_bus, m_recv, u_recv))
   when(io.bus.a.valid && !io.bus.a.ready) {
     perf.dBusAWait := perf.dBusAWait + 1.U
   }
@@ -1510,6 +1644,187 @@ class Backend(implicit p: CoreParams) extends Module {
   }
 
   // ============================================================
+  // Cached misaligned LSU
+  // ============================================================
+
+  def mAccessByteAddr(i: Int): UInt =
+    (m_addr + i.U)(p.addrBits - 1, 0)
+
+  def mLoadHitPart(i: Int): UInt = {
+    val addr = mAccessByteAddr(i)
+    val useWord1 = m_need_second && sameWordAddr(addr, m_word1_addr)
+    val hit = Mux(useWord1, m_word1_hit, m_word0_hit)
+    val word = Mux(useWord1, m_word1_data, m_word0_data)
+    val byte = (word >> (addr(wordOffsetBits - 1, 0) << 3))(7, 0)
+    Mux(i.U < m_byte_count && hit,
+      (Cat(0.U((p.xlen - 8).W), byte) << (i.U << 3))(p.xlen - 1, 0),
+      0.U(p.xlen.W)
+    )
+  }
+
+  def mStoreMaskFor(wordAddr: UInt, hit: Bool): UInt =
+    (0 until bytesPerWord).map { i =>
+      val addr = mAccessByteAddr(i)
+      Mux(i.U < m_byte_count && hit && sameWordAddr(addr, wordAddr),
+        (1.U(bytesPerWord.W) << addr(wordOffsetBits - 1, 0))(bytesPerWord - 1, 0),
+        0.U(bytesPerWord.W)
+      )
+    }.reduce(_ | _)
+
+  def mStoreDataFor(wordAddr: UInt, hit: Bool): UInt =
+    (0 until bytesPerWord).map { i =>
+      val addr = mAccessByteAddr(i)
+      val byte = (m_store_data >> (i.U << 3))(7, 0)
+      Mux(i.U < m_byte_count && hit && sameWordAddr(addr, wordAddr),
+        (Cat(0.U((p.xlen - 8).W), byte) << (addr(wordOffsetBits - 1, 0) << 3))(p.xlen - 1, 0),
+        0.U(p.xlen.W)
+      )
+    }.reduce(_ | _)
+
+  val m_hit_load_word = (0 until bytesPerWord).map(mLoadHitPart).reduce(_ | _)
+  val m_word0_store_mask = mStoreMaskFor(m_word0_addr, m_word0_hit)
+  val m_word1_store_mask = mStoreMaskFor(m_word1_addr, m_word1_hit)
+  val m_word0_store_data = mStoreDataFor(m_word0_addr, m_word0_hit)
+  val m_word1_store_data = mStoreDataFor(m_word1_addr, m_word1_hit)
+  val m_finish = m_state === MisalignedState.busCheck && m_byte_idx >= m_byte_count
+  val m_load_result = loadExtend(m_load_word, 0.U(p.addrBits.W), m_op)
+
+  when(w_start_cached_misaligned) {
+    val byteCount = lsuByteCount(w_uop.info.fuOpType)
+    val word0Addr = Cat(w_lsu_addr(p.addrBits - 1, wordOffsetBits), 0.U(wordOffsetBits.W))
+    val word1Addr = (word0Addr + bytesPerWord.U)(p.addrBits - 1, 0)
+    val endOffset = w_lsu_addr(wordOffsetBits - 1, 0) +& byteCount
+    val needSecond = endOffset > bytesPerWord.U
+
+    m_pc := w_uop.pc
+    m_inst := w_uop.inst
+    m_addr := w_lsu_addr
+    m_op := w_uop.info.fuOpType
+    m_rd := w_uop.rd
+    m_vslot := w_uop.vslot
+    m_vslot_valid := w_uop.vslot_valid
+    m_is_load := w_is_load
+    m_is_store := w_is_store
+    m_byte_count := byteCount
+    m_byte_idx := 0.U
+    m_store_data := w_uop.store_data
+    m_load_word := 0.U
+    m_word0_addr := word0Addr
+    m_word1_addr := word1Addr
+    m_word0_hit := w_lookup_hit
+    m_word1_hit := false.B
+    m_word0_way := w_lookup_way
+    m_word1_way := 0.U
+    m_word0_data := w_cache_word
+    m_word1_data := 0.U
+    m_need_second := needSecond
+    m_bus_a_valid := false.B
+    m_state := Mux(needSecond, MisalignedState.readSecondReq, MisalignedState.busCheck)
+  }
+
+  when(m_state === MisalignedState.readSecondReq) {
+    val m_word1_set = p.dcacheGetSet(m_word1_addr)
+    val m_word1_idx = dcacheDataIdx(m_word1_addr)
+    for (i <- 0 until p.dcacheWays) {
+      dc_tags(i).io.r.req.valid := true.B
+      dc_tags(i).io.r.req.bits.apply(m_word1_set)
+      dc_datas(i).io.r.req.valid := m_is_load
+      dc_datas(i).io.r.req.bits.apply(m_word1_idx)
+    }
+    m_state := MisalignedState.readSecondResp
+  }
+
+  when(m_state === MisalignedState.readSecondResp) {
+    val m_word1_set = p.dcacheGetSet(m_word1_addr)
+    val m_word1_tag = p.dcacheGetTag(m_word1_addr)
+    val m_word1_hits = VecInit((0 until p.dcacheWays).map { i =>
+      dc_valid(i)(m_word1_set) && dc_tags(i).io.r.resp.data(0).tag === m_word1_tag
+    })
+    val m_word1_raw_hit = m_word1_hits.asUInt.orR
+    val m_word1_hit_way = PriorityEncoder(m_word1_hits)
+    m_word1_hit := m_word1_raw_hit
+    m_word1_way := m_word1_hit_way
+    m_word1_data := Mux(m_word1_hit_way === 0.U, dc_datas(0).io.r.resp.data(0), dc_datas(1).io.r.resp.data(0))
+    m_state := MisalignedState.busCheck
+  }
+
+  when(m_state === MisalignedState.busCheck) {
+    when(m_byte_idx === 0.U && m_is_load) {
+      m_load_word := m_hit_load_word
+    }
+
+    when(m_finish) {
+      m_state := MisalignedState.idle
+      m_vslot_valid := false.B
+      m_release_vslot := m_vslot_valid
+      m_release_slot := m_vslot
+
+      v_rfen := m_is_load && nonZeroReg(m_rd)
+      v_rf := m_rd
+      v_rfdata := m_load_result
+
+      when(m_is_load && nonZeroReg(m_rd)) {
+        rf(m_rd) := m_load_result
+      }
+
+      m_store_commit := m_is_store
+      m_store_entry0_valid := m_is_store && m_word0_store_mask =/= 0.U
+      m_store_entry1_valid := m_is_store && m_word1_store_mask =/= 0.U
+      m_store_entry0.valid := true.B
+      m_store_entry0.way := m_word0_way
+      m_store_entry0.idx := dcacheDataIdx(m_word0_addr)
+      m_store_entry0.addr := m_word0_addr
+      m_store_entry0.mask := m_word0_store_mask
+      m_store_entry0.data := m_word0_store_data
+      m_store_entry0.set := p.dcacheGetSet(m_word0_addr)
+      m_store_entry1.valid := true.B
+      m_store_entry1.way := m_word1_way
+      m_store_entry1.idx := dcacheDataIdx(m_word1_addr)
+      m_store_entry1.addr := m_word1_addr
+      m_store_entry1.mask := m_word1_store_mask
+      m_store_entry1.data := m_word1_store_data
+      m_store_entry1.set := p.dcacheGetSet(m_word1_addr)
+
+      io.commit.valid := true.B
+      io.commit.bits.pc := m_pc
+      io.commit.bits.inst := m_inst
+      io.commit.bits.jump := true.B
+      io.commit.bits.target := (m_pc + 4.U)(p.addrBits - 1, 0)
+
+      io.diffCommitValid := true.B
+      io.diffCommitPc := m_pc
+      io.diffCommitInst := m_inst
+      io.diffCommitRfWen := m_is_load && nonZeroReg(m_rd)
+      io.diffCommitRd := m_rd
+      io.diffCommitIsLoad := m_is_load
+      io.diffCommitIsStore := m_is_store
+      io.diffCommitIsDelayedWb := false.B
+      io.diffExit := m_inst === RV64IInstructions.NEMU_TRAP.value.U
+    }.elsewhen(m_byte_needs_bus) {
+      m_state := MisalignedState.busSend
+      m_bus_a_valid := true.B
+    }.otherwise {
+      m_byte_idx := m_byte_idx + 1.U
+    }
+  }
+
+  when(m_send && io.bus.a.fire) {
+    m_bus_a_valid := false.B
+    m_state := MisalignedState.busRecv
+  }
+
+  when(m_recv && io.bus.d.fire) {
+    when(m_is_load) {
+      val m_load_byte = (io.bus.d.bits.data >> (m_byte_lane << 3))(7, 0)
+      val m_load_byte_shifted = (Cat(0.U((p.xlen - 8).W), m_load_byte) << (m_byte_idx << 3))(p.xlen - 1, 0)
+      val m_load_byte_mask = (Fill(8, 1.U(1.W)).asUInt << (m_byte_idx << 3))(p.xlen - 1, 0)
+      m_load_word := (m_load_word & ~m_load_byte_mask) | m_load_byte_shifted
+    }
+    m_byte_idx := m_byte_idx + 1.U
+    m_state := MisalignedState.busCheck
+  }
+
+  // ============================================================
   // Uncached LSU
   // ============================================================
 
@@ -1614,7 +1929,8 @@ class Backend(implicit p: CoreParams) extends Module {
   // Pipeline and scoreboard updates
   // ============================================================
 
-  assert(!(e_release_vslot && u_release_vslot), "E release and uncached release share release(0)")
+  assert(!(e_release_vslot && (u_release_vslot || m_release_vslot)), "E release and LSU slow release share release(0)")
+  assert(!(u_release_vslot && m_release_vslot), "Uncached release and misaligned release share release(0)")
   assert(!(vAllocator.io.release(0).fire && vAllocator.io.release(1).fire &&
     vAllocator.io.release(0).bits === vAllocator.io.release(1).bits))
 
@@ -1654,6 +1970,9 @@ class Backend(implicit p: CoreParams) extends Module {
   w_load_data := e_load_data
   w_store_entry := e_store_entry
   w_hit := e_hit
+  w_lookup_hit := e_lookup_hit
+  w_lookup_way := e_hit_way
+  w_cache_word := after_w_store
   w_hit_way := e_hit_way
   w_replace_way := e_replace_way
   w_miss := e_miss

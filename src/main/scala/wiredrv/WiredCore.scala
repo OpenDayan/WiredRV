@@ -23,6 +23,8 @@ class WiredCoreIO(implicit p: CoreParams) extends Bundle {
   val clusterInterrupt = Input(Bool())
   val debug = Input(Bool())
   val time = Input(Valid(UInt(64.W)))
+  val tensorInst = Decoupled(new TensorInst)
+  val tensorResp = Flipped(Decoupled(new TensorResp))
   val dft = Input(new BaseTestBundle)
   val ramctl = Input(new SramCtrlBundle)
   val diffCommitValid = Output(Bool())
@@ -74,6 +76,8 @@ class WiredCore(implicit p: CoreParams) extends Module {
   backend.io.meip := io.meip || io.clusterInterrupt
   backend.io.debug := io.debug
   backend.io.time := io.time
+  io.tensorInst <> backend.io.tensorInst
+  backend.io.tensorResp <> io.tensorResp
   frontend.io.redirects := backend.io.redirects
   frontend.io.branchUpdate := backend.io.branchUpdate
   frontend.io.ifencei := backend.io.ifencei

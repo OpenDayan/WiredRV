@@ -7,6 +7,7 @@ import difftest._
 import difftest.common.DifftestMem
 import lmss.axi._
 import wiredrv._
+import wiredrv.backend.TensorResp
 import wiredrv.frontend._
 
 class SimInterruptInjector extends BlackBox with HasBlackBoxInline {
@@ -457,6 +458,12 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   core.io.dft.ram.aux_ckbp := false.B
   core.io.dft.ram.mcp_hold := false.B
   core.io.ramctl.cfg := 0.U
+  val tensorRespStub = Module(new Queue(new TensorResp, entries = 1))
+  core.io.tensorInst.ready := tensorRespStub.io.enq.ready
+  tensorRespStub.io.enq.valid := core.io.tensorInst.fire
+  tensorRespStub.io.enq.bits.data := 0.U
+  tensorRespStub.io.enq.bits.rd := core.io.tensorInst.bits.instWord(11, 7)
+  core.io.tensorResp <> tensorRespStub.io.deq
   mem.io.axi <> core.io.mem
 
   val commitValid = core.io.diffCommitValid

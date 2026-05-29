@@ -20,6 +20,7 @@ object FuType {
   val lsu = 4.U(width.W)
   val csr = 5.U(width.W)
   val mdu = 6.U(width.W)
+  val tensor = 7.U(width.W)
 }
 
 object ImmSel {
@@ -117,6 +118,7 @@ object LSUOp {
 }
 
 object RV64IInstructions {
+  val CUSTOM0 = BitPat("b?????????????????????????0001011")
   val NEMU_TRAP = BitPat("b00000000000000000000000001101011")
   val LUI = BitPat("b?????????????????????????0110111")
   val AUIPC = BitPat("b?????????????????????????0010111")
@@ -181,6 +183,7 @@ object RV64IInstructions {
   val ECALL = BitPat("b00000000000000000000000001110011")
   val EBREAK = BitPat("b00000000000100000000000001110011")
   val MRET = BitPat("b00110000001000000000000001110011")
+  val WFI = BitPat("b00010000010100000000000001110011")
 }
 
 object RV64MInstructions {
@@ -235,6 +238,7 @@ object RV64IDecodeTable extends DecodeConstants {
   import RV64MInstructions._
 
   val table: Array[(BitPat, List[UInt])] = Array(
+    CUSTOM0 -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.tensor, rwen = true).generate(),
     NEMU_TRAP -> RVDecode().generate(),
     LUI    -> RVDecode(src2 = SrcType.imm, fu = FuType.alu, fuOp = AluOp.copy2, rwen = true, selImm = ImmSel.u).generate(),
     AUIPC  -> RVDecode(src1 = SrcType.pc, src2 = SrcType.imm, fu = FuType.alu, fuOp = AluOp.add, rwen = true, selImm = ImmSel.u).generate(),
@@ -311,6 +315,7 @@ object RV64IDecodeTable extends DecodeConstants {
     CSRRCI -> RVDecode(src2 = SrcType.imm, fu = FuType.csr, fuOp = CsrOp.csrrc, rwen = true, selImm = ImmSel.z).generate(),
     ECALL  -> RVDecode(fu = FuType.csr, fuOp = CsrOp.ecall, flushPipe = true).generate(),
     EBREAK -> RVDecode(fu = FuType.csr, fuOp = CsrOp.ecall, flushPipe = true).generate(),
-    MRET   -> RVDecode(fu = FuType.csr, fuOp = CsrOp.mret, flushPipe = true).generate()
+    MRET   -> RVDecode(fu = FuType.csr, fuOp = CsrOp.mret, flushPipe = true).generate(),
+    WFI    -> RVDecode().generate()
   )
 }
