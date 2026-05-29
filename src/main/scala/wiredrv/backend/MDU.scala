@@ -106,21 +106,73 @@ class MulPipeline(implicit p: CoreParams) extends Module {
     val out = Valid(new MduWriteback)
   })
 
-  // W stage is the first multiply pipeline stage; these are the remaining
-  // three stages, so total multiply latency is four stages.
-  private val mulStagesAfterW = 3
-  val stages = RegInit(VecInit(Seq.fill(mulStagesAfterW)(0.U.asTypeOf(Valid(new MduWriteback)))))
-
-  io.out := stages.last
-
-  stages(0).valid := io.in.valid
-  stages(0).bits.rd := io.in.bits.rd
-  stages(0).bits.vslot := io.in.bits.vslot
-  stages(0).bits.data := MduCalc.mulResult(io.in.bits.src1, io.in.bits.src2, io.in.bits.op)
-
-  for (i <- 1 until mulStagesAfterW) {
-    stages(i) := stages(i - 1)
+  class MulPipePayload extends Bundle {
+    val rd = UInt(5.W)
+    val vslot = UInt(p.longLatencySlotsBits.W)
+    val op = UInt(MduOp.width.W)
+    val negate = Bool()
+    val aLo = UInt(32.W)
+    val aHi = UInt(32.W)
+    val bLo = UInt(32.W)
+    val bHi = UInt(32.W)
+    val acc = UInt(128.W)
   }
+
+  def to128Low(product: UInt): UInt = Cat(0.U(64.W), product)
+  def to128Shift32(product: UInt): UInt = Cat(0.U(32.W), product, 0.U(32.W))
+  def to128Shift64(product: UInt): UInt = Cat(product, 0.U(64.W))
+  def twos128(x: UInt): UInt = (~x).asUInt + 1.U(128.W)
+  def abs64(x: UInt, neg: Bool): UInt = Mux(neg, (~x).asUInt + 1.U(64.W), x)
+  def sext32(x: UInt): UInt = Cat(Fill(32, x(31)), x)
+
+  // W stage is the first multiply stage. The following registers carry the
+  // remaining three stages, one 32x32 partial product per stage.
+  val s1 = RegInit(0.U.asTypeOf(Valid(new MulPipePayload)))
+  val s2 = RegInit(0.U.asTypeOf(Valid(new MulPipePayload)))
+  val s3 = RegInit(0.U.asTypeOf(Valid(new MulPipePayload)))
+
+  val op = io.in.bits.op
+  val lhsSigned = op === MduOp.mulh || op === MduOp.mulhsu
+  val rhsSigned = op === MduOp.mulh
+  val lhsNeg = lhsSigned && io.in.bits.src1(63)
+  val rhsNeg = rhsSigned && io.in.bits.src2(63)
+  val aAbs = abs64(io.in.bits.src1, lhsNeg)
+  val bAbs = abs64(io.in.bits.src2, rhsNeg)
+  val pp0 = aAbs(31, 0) * bAbs(31, 0)
+
+  s1.valid := io.in.valid
+  s1.bits.rd := io.in.bits.rd
+  s1.bits.vslot := io.in.bits.vslot
+  s1.bits.op := op
+  s1.bits.negate := lhsNeg ^ rhsNeg
+  s1.bits.aLo := aAbs(31, 0)
+  s1.bits.aHi := aAbs(63, 32)
+  s1.bits.bLo := bAbs(31, 0)
+  s1.bits.bHi := bAbs(63, 32)
+  s1.bits.acc := to128Low(pp0)
+
+  val pp1 = s1.bits.aLo * s1.bits.bHi
+  s2 := s1
+  s2.bits.acc := s1.bits.acc + to128Shift32(pp1)
+
+  val pp2 = s2.bits.aHi * s2.bits.bLo
+  s3 := s2
+  s3.bits.acc := s2.bits.acc + to128Shift32(pp2)
+
+  val pp3 = s3.bits.aHi * s3.bits.bHi
+  val productAbs = s3.bits.acc + to128Shift64(pp3)
+  val product = Mux(s3.bits.negate, twos128(productAbs), productAbs)
+  val outData = MuxLookup(s3.bits.op, product(63, 0))(Seq(
+    MduOp.mulh -> product(127, 64),
+    MduOp.mulhsu -> product(127, 64),
+    MduOp.mulhu -> product(127, 64),
+    MduOp.mulw -> sext32(product(31, 0))
+  ))
+
+  io.out.valid := s3.valid
+  io.out.bits.rd := s3.bits.rd
+  io.out.bits.vslot := s3.bits.vslot
+  io.out.bits.data := outData
 }
 
 class DivUnit(implicit p: CoreParams) extends Module {
