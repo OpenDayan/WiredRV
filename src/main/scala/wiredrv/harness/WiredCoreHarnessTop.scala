@@ -459,10 +459,42 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   core.io.dft.ram.mcp_hold := false.B
   core.io.ramctl.cfg := 0.U
   val tensorRespStub = Module(new Queue(new TensorResp, entries = 1))
+  val tensor32IssueInst = "h000000002462838b".U(64.W)
+  val tensor64IssueInst = "h0000006f266283bf".U(64.W)
+  val tensor32Rs1Data = "h0123456789abcdef".U(64.W)
+  val tensor32Rs2Data = "hfedcba9876543210".U(64.W)
+  val tensor32RdData = "h0badc0ffee0ddf00".U(64.W)
+  val tensor64Rs1Data = "h13579bdf2468ace0".U(64.W)
+  val tensor64Rs2Data = "hf0e1d2c3b4a59687".U(64.W)
+  val tensor64RdData = "hdeadbeefcafebabe".U(64.W)
+  val tensor32Issue = core.io.tensorInst.bits.instWord === tensor32IssueInst
+  val tensor64Issue = core.io.tensorInst.bits.instWord === tensor64IssueInst
   core.io.tensorInst.ready := tensorRespStub.io.enq.ready
   tensorRespStub.io.enq.valid := core.io.tensorInst.fire
-  tensorRespStub.io.enq.bits.data := 0.U
+  tensorRespStub.io.enq.bits.data := Mux(
+    tensor32Issue,
+    "h1122334455667788".U,
+    Mux(tensor64Issue, "h8877665544332211".U, 0.U)
+  )
   tensorRespStub.io.enq.bits.rd := core.io.tensorInst.bits.instWord(11, 7)
+  when(core.io.tensorInst.fire && tensor32Issue) {
+    assert(core.io.tensorInst.bits.rs1Data === tensor32Rs1Data,
+      "Tensor 32-bit issue rs1Data mismatch")
+    assert(core.io.tensorInst.bits.rs2Data === tensor32Rs2Data,
+      "Tensor 32-bit issue rs2Data mismatch")
+    assert(core.io.tensorInst.bits.rdData === tensor32RdData,
+      "Tensor 32-bit issue rdData mismatch")
+  }
+  when(core.io.tensorInst.fire && tensor64Issue) {
+    assert(core.io.tensorInst.bits.rs1Data === tensor64Rs1Data,
+      "Tensor 64-bit issue rs1Data mismatch")
+    assert(core.io.tensorInst.bits.rs2Data === tensor64Rs2Data,
+      "Tensor 64-bit issue rs2Data mismatch")
+    assert(core.io.tensorInst.bits.rdData === tensor64RdData,
+      "Tensor 64-bit issue rdData mismatch")
+    assert(core.io.tensorInst.bits.instWord(63, 32) === "h0000006f".U,
+      "Tensor 64-bit issue high word mismatch")
+  }
   core.io.tensorResp <> tensorRespStub.io.deq
   mem.io.axi <> core.io.mem
 
