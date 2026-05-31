@@ -9,135 +9,6 @@ import wiredrv.frontend.{BranchUpdate, FetchPacket}
 import xs.utils.mbist.MbistPipeline
 import xs.utils.sram.SRAMTemplate
 
-class CoreCsrState(implicit p: CoreParams) extends Bundle {
-  val privilegeMode = UInt(p.xlen.W)
-  val mstatus = UInt(p.xlen.W)
-  val sstatus = UInt(p.xlen.W)
-  val mepc = UInt(p.xlen.W)
-  val sepc = UInt(p.xlen.W)
-  val mtval = UInt(p.xlen.W)
-  val stval = UInt(p.xlen.W)
-  val mtvec = UInt(p.xlen.W)
-  val stvec = UInt(p.xlen.W)
-  val mcause = UInt(p.xlen.W)
-  val scause = UInt(p.xlen.W)
-  val satp = UInt(p.xlen.W)
-  val mip = UInt(p.xlen.W)
-  val mie = UInt(p.xlen.W)
-  val mscratch = UInt(p.xlen.W)
-  val sscratch = UInt(p.xlen.W)
-  val mideleg = UInt(p.xlen.W)
-  val medeleg = UInt(p.xlen.W)
-}
-
-class BackendUop(implicit p: CoreParams) extends Bundle {
-  val pc = UInt(p.addrBits.W)
-  val inst = UInt(32.W)
-  val instWord = UInt(64.W)
-  val predictedJump = Bool()
-  val predictedTarget = UInt(p.addrBits.W)
-  val info = new DecodeInfo
-
-  val rs1 = UInt(5.W)
-  val rs2 = UInt(5.W)
-  val rd = UInt(5.W)
-  val imm = UInt(p.xlen.W)
-  val csrAddr = UInt(12.W)
-  val exceptionValid = Bool()
-  val exceptionCode = UInt(16.W)
-  val isInterrupt = Bool()
-
-  val src1 = UInt(p.xlen.W)
-  val src2 = UInt(p.xlen.W)
-  val store_data = UInt(p.xlen.W)
-  val rdData = UInt(p.xlen.W)
-  val src1_forward_w = Bool()
-  val src2_forward_w = Bool()
-  val store_forward_w = Bool()
-
-  val flushed = Bool()
-  val vslot_valid = Bool()
-  val vslot = UInt(p.longLatencySlotsBits.W)
-}
-
-class DCTag(implicit p: CoreParams) extends Bundle {
-  val tag = UInt(p.dcacheTagBits.W)
-  val dirty = Bool()
-}
-
-class StoreQueueEntry(implicit p: CoreParams) extends Bundle {
-  val valid = Bool()
-  val way = UInt(log2Ceil(p.dcacheWays).W)
-  val idx = UInt((p.dcacheSetBits + log2Ceil(p.dcacheLineBytes / (p.xlen / 8))).W)
-  val addr = UInt(p.addrBits.W)
-  val mask = UInt((p.xlen / 8).W)
-  val data = UInt(p.xlen.W)
-  val set = UInt(p.dcacheSetBits.W)
-}
-
-class BackendPerfCounters extends Bundle {
-  val cycles = UInt(64.W)
-  val commits = UInt(64.W)
-  val dStall = UInt(64.W)
-  val dRs1VarHaz = UInt(64.W)
-  val dRs2VarHaz = UInt(64.W)
-  val dRdVarHaz = UInt(64.W)
-  val dERawHaz = UInt(64.W)
-  val dWRawHaz = UInt(64.W)
-  val dLsuBaseNotReady = UInt(64.W)
-  val dJrNotReady = UInt(64.W)
-  val dNoVslot = UInt(64.W)
-  val dDivResourceBusy = UInt(64.W)
-  val dCacheBusy = UInt(64.W)
-  val dUncachedBusy = UInt(64.W)
-  val dStoreQueueWait = UInt(64.W)
-  val dInflightStoreWait = UInt(64.W)
-  val dFenceWait = UInt(64.W)
-  val dMisalignedWait = UInt(64.W)
-  val dNemuTrapWait = UInt(64.W)
-  val loadCommit = UInt(64.W)
-  val storeCommit = UInt(64.W)
-  val jumpCommit = UInt(64.W)
-  val branchCommit = UInt(64.W)
-  val branchRedirect = UInt(64.W)
-  val dcacheLoadHit = UInt(64.W)
-  val dcacheStoreHit = UInt(64.W)
-  val dcacheMiss = UInt(64.W)
-  val dcacheMissLoad = UInt(64.W)
-  val dcacheMissStore = UInt(64.W)
-  val dcacheRefillCycles = UInt(64.W)
-  val dcacheRefillRespWait = UInt(64.W)
-  val dcacheVictimWriteback = UInt(64.W)
-  val dcacheVictimWritebackCycles = UInt(64.W)
-  val cmoStart = UInt(64.W)
-  val cmoCycles = UInt(64.W)
-  val storeQueueEnq = UInt(64.W)
-  val storeQueueDrain = UInt(64.W)
-  val storeQueueFullCycles = UInt(64.W)
-  val storeQueueOneEntryCycles = UInt(64.W)
-  val uncachedAccess = UInt(64.W)
-  val uncachedCycles = UInt(64.W)
-  val dBusAWait = UInt(64.W)
-  val dBusDWait = UInt(64.W)
-  val dBusDWaitRefill = UInt(64.W)
-  val dBusDWaitUncached = UInt(64.W)
-  val mulStart = UInt(64.W)
-  val divStart = UInt(64.W)
-  val divBusyCycles = UInt(64.W)
-}
-
-object DCacheRefillState {
-  val idle :: sendA :: recvD :: writeMeta :: cmoRead :: cmoWriteback :: cmoUpdate :: Nil = Enum(7)
-}
-
-object UncachedState {
-  val idle :: sendA :: recvD :: Nil = Enum(3)
-}
-
-object MisalignedState {
-  val idle :: readSecondReq :: readSecondResp :: busCheck :: busSend :: busRecv :: Nil = Enum(6)
-}
-
 class Backend(implicit p: CoreParams) extends Module {
   require(p.xlen == 64, "Backend currently implements RV64 data path")
   require(p.innerBusWidth == 32, "Backend refill path expects the 32-bit inner bus")
@@ -198,34 +69,9 @@ class Backend(implicit p: CoreParams) extends Module {
   private val beatCntBits = log2Ceil(beatsPerLine)
   private val byteIdxBits = log2Ceil(bytesPerWord)
   private val byteCountBits = log2Ceil(bytesPerWord + 1)
-  private val misaValue = ((BigInt(2) << (p.xlen - 2)) | (BigInt(1) << 8) | (BigInt(1) << 12)).U(p.xlen.W)
-  private val mstatusMppMask = (BigInt(3) << 11).U(p.xlen.W)
-  private val mstatusMppM = (BigInt(3) << 11).U(p.xlen.W)
 
-  private def nonZeroReg(reg: UInt): Bool = reg =/= 0.U
-
-  private def inRegions(addr: UInt, regions: Seq[wiredrv.AddrRegion]): Bool =
-    regions
-      .map(r => addr >= r.base.U(p.addrBits.W) && addr < (r.base + r.size).U(p.addrBits.W))
-      .reduceOption(_ || _)
-      .getOrElse(false.B)
-
-  private def dcacheDataIdx(set: UInt, word: UInt): UInt = set ## word
-
-  private def dcacheDataIdx(addr: UInt): UInt =
-    dcacheDataIdx(p.dcacheGetSet(addr), p.dcacheGetWord(addr))
-
-  private def lineBase(addr: UInt): UInt =
-    Cat(addr(p.addrBits - 1, p.dcacheLineBits), 0.U(p.dcacheLineBits.W))
-
-  private def lineBaseFromTag(tag: UInt, set: UInt): UInt =
-    Cat(tag, set, 0.U(p.dcacheLineBits.W))
-
-  private def sameWordAddr(a: UInt, b: UInt): Bool =
-    a(p.addrBits - 1, wordOffsetBits) === b(p.addrBits - 1, wordOffsetBits)
-
-  private def byteMask(mask: UInt): UInt =
-    Cat(mask.asBools.reverse.map(bit => Fill(8, bit)))
+  private val lsuUtils = new BackendLsuUtils
+  import lsuUtils._
 
   private def selectSrc(sel: UInt, regData: UInt, pc: UInt, imm: UInt): UInt =
     MuxLookup(sel, 0.U(p.xlen.W))(Seq(
@@ -234,191 +80,6 @@ class Backend(implicit p: CoreParams) extends Module {
       SrcType.imm -> imm
     ))
 
-  private def isCmoOp(op: UInt): Bool =
-    op === LSUOp.cboInval || op === LSUOp.cboClean || op === LSUOp.cboFlush
-
-  private def amoNeedsAlign(op: UInt, addr: UInt): Bool =
-    (LSUOp.isAmoW(op) && addr(1, 0).orR) || (LSUOp.isAmoD(op) && addr(2, 0).orR)
-
-  private def loadNeedsAlign(op: UInt, addr: UInt): Bool =
-    MuxLookup(op, false.B)(Seq(
-      LSUOp.lh -> addr(0),
-      LSUOp.lhu -> addr(0),
-      LSUOp.lw -> addr(1, 0).orR,
-      LSUOp.lwu -> addr(1, 0).orR,
-      LSUOp.ld -> addr(2, 0).orR
-    ))
-
-  private def storeNeedsAlign(op: UInt, addr: UInt): Bool =
-    MuxLookup(op, false.B)(Seq(
-      LSUOp.sh -> addr(0),
-      LSUOp.sw -> addr(1, 0).orR,
-      LSUOp.sd -> addr(2, 0).orR
-    ))
-
-  private def lsuSize(op: UInt): UInt =
-    MuxLookup(op, 0.U(4.W))(Seq(
-      LSUOp.lb -> 0.U,
-      LSUOp.lbu -> 0.U,
-      LSUOp.sb -> 0.U,
-      LSUOp.lh -> 1.U,
-      LSUOp.lhu -> 1.U,
-      LSUOp.sh -> 1.U,
-      LSUOp.lw -> 2.U,
-      LSUOp.lwu -> 2.U,
-      LSUOp.sw -> 2.U,
-      LSUOp.amoaddW -> 2.U,
-      LSUOp.amoswapW -> 2.U,
-      LSUOp.amoxorW -> 2.U,
-      LSUOp.amoorW -> 2.U,
-      LSUOp.amoandW -> 2.U,
-      LSUOp.amominW -> 2.U,
-      LSUOp.amomaxW -> 2.U,
-      LSUOp.amominuW -> 2.U,
-      LSUOp.amomaxuW -> 2.U,
-      LSUOp.amocasW -> 2.U,
-      LSUOp.ld -> 3.U,
-      LSUOp.sd -> 3.U,
-      LSUOp.amoaddD -> 3.U,
-      LSUOp.amoswapD -> 3.U,
-      LSUOp.amoxorD -> 3.U,
-      LSUOp.amoorD -> 3.U,
-      LSUOp.amoandD -> 3.U,
-      LSUOp.amominD -> 3.U,
-      LSUOp.amomaxD -> 3.U,
-      LSUOp.amominuD -> 3.U,
-      LSUOp.amomaxuD -> 3.U,
-      LSUOp.amocasD -> 3.U
-    ))
-
-  private def lsuByteCount(op: UInt): UInt =
-    (1.U(byteCountBits.W) << lsuSize(op))(byteCountBits - 1, 0)
-
-  private def storeMask(op: UInt, addr: UInt): UInt = {
-    val off = addr(wordOffsetBits - 1, 0)
-    val rawMask = MuxLookup(op, 0.U(bytesPerWord.W))(Seq(
-      LSUOp.sb -> (1.U(bytesPerWord.W) << off),
-      LSUOp.sh -> (3.U(bytesPerWord.W) << off),
-      LSUOp.sw -> ("hf".U(bytesPerWord.W) << off),
-      LSUOp.sd -> "hff".U(bytesPerWord.W),
-      LSUOp.amoaddW -> ("hf".U(bytesPerWord.W) << off),
-      LSUOp.amoswapW -> ("hf".U(bytesPerWord.W) << off),
-      LSUOp.amoxorW -> ("hf".U(bytesPerWord.W) << off),
-      LSUOp.amoorW -> ("hf".U(bytesPerWord.W) << off),
-      LSUOp.amoandW -> ("hf".U(bytesPerWord.W) << off),
-      LSUOp.amominW -> ("hf".U(bytesPerWord.W) << off),
-      LSUOp.amomaxW -> ("hf".U(bytesPerWord.W) << off),
-      LSUOp.amominuW -> ("hf".U(bytesPerWord.W) << off),
-      LSUOp.amomaxuW -> ("hf".U(bytesPerWord.W) << off),
-      LSUOp.amocasW -> ("hf".U(bytesPerWord.W) << off),
-      LSUOp.amoaddD -> "hff".U(bytesPerWord.W),
-      LSUOp.amoswapD -> "hff".U(bytesPerWord.W),
-      LSUOp.amoxorD -> "hff".U(bytesPerWord.W),
-      LSUOp.amoorD -> "hff".U(bytesPerWord.W),
-      LSUOp.amoandD -> "hff".U(bytesPerWord.W),
-      LSUOp.amominD -> "hff".U(bytesPerWord.W),
-      LSUOp.amomaxD -> "hff".U(bytesPerWord.W),
-      LSUOp.amominuD -> "hff".U(bytesPerWord.W),
-      LSUOp.amomaxuD -> "hff".U(bytesPerWord.W),
-      LSUOp.amocasD -> "hff".U(bytesPerWord.W)
-    ))
-    rawMask(bytesPerWord - 1, 0)
-  }
-
-  private def storeData(op: UInt, data: UInt, addr: UInt): UInt = {
-    val storeBytes = MuxLookup(op, data)(Seq(
-      LSUOp.sb -> Cat(0.U((p.xlen - 8).W), data(7, 0)),
-      LSUOp.sh -> Cat(0.U((p.xlen - 16).W), data(15, 0)),
-      LSUOp.sw -> Cat(0.U((p.xlen - 32).W), data(31, 0)),
-      LSUOp.sd -> data
-    ))
-    storeBytes << (addr(wordOffsetBits - 1, 0) << 3)
-  }
-
-  private def amoOperand(op: UInt, data: UInt): UInt = {
-    val wordData = Cat(0.U((p.xlen - 32).W), data(31, 0))
-    val sizedData = Mux(LSUOp.isAmoW(op), wordData, data)
-    Mux(op === LSUOp.amoandW, Cat(0.U((p.xlen - 32).W), ~data(31, 0)),
-      Mux(op === LSUOp.amoandD, ~data, sizedData))
-  }
-
-  private def amoBusData(op: UInt, data: UInt, addr: UInt): UInt =
-    (amoOperand(op, data) << (addr(wordOffsetBits - 1, 0) << 3))(p.xlen - 1, 0)
-
-  private def amoCompareData(op: UInt, data: UInt, addr: UInt): UInt = {
-    val wordData = Cat(0.U((p.xlen - 32).W), data(31, 0))
-    val sizedData = Mux(LSUOp.isAmoW(op), wordData, data)
-    (sizedData << (addr(wordOffsetBits - 1, 0) << 3))(p.xlen - 1, 0)
-  }
-
-  private def csrRead(addr: UInt, cycle: UInt): UInt =
-    MuxLookup(addr, 0.U(p.xlen.W))(Seq(
-      "h300".U(12.W) -> mstatus,
-      "h304".U(12.W) -> mie,
-      "h305".U(12.W) -> mtvec,
-      "h301".U(12.W) -> misaValue,
-      "h340".U(12.W) -> mscratch,
-      "h341".U(12.W) -> mepc,
-      "h342".U(12.W) -> mcause,
-      "h343".U(12.W) -> mtval,
-      "h344".U(12.W) -> mipRead,
-      "h3a0".U(12.W) -> pmpcfg0,
-      "h3b0".U(12.W) -> pmpaddr0,
-      "hc01".U(12.W) -> csrTime,
-      "hc81".U(12.W) -> Cat(0.U(32.W), csrTime(63, 32)),
-      "hb00".U(12.W) -> cycle, // mcycle
-      "hb80".U(12.W) -> Cat(0.U(32.W), cycle(63, 32)), // mcycleh, useful for RV32-style code
-      "hf11".U(12.W) -> 0.U,
-      "hf12".U(12.W) -> 0.U,
-      "hf13".U(12.W) -> 0.U,
-      "hf14".U(12.W) -> Cat(0.U((p.xlen - p.maxHartIdBits).W), io.hartId)
-    ))
-
-  private def csrWriteData(op: UInt, old: UInt, src: UInt): UInt =
-    MuxLookup(op, old)(Seq(
-      CsrOp.csrrw -> src,
-      CsrOp.csrrs -> (old | src),
-      CsrOp.csrrc -> (old & ~src)
-    ))
-
-  private def legalizeMstatus(data: UInt): UInt =
-    data
-
-  private def legalizeCsrWrite(addr: UInt, data: UInt): UInt =
-    Mux(addr === "h300".U, legalizeMstatus(data), data)
-
-  private def csrModeledWritable(addr: UInt): Bool =
-    addr === "h300".U || addr === "h304".U || addr === "h305".U ||
-      addr === "h340".U || addr === "h341".U || addr === "h342".U ||
-      addr === "h343".U || addr === "h344".U || addr === "h3a0".U ||
-      addr === "h3b0".U
-
-  private def csrWrites(op: UInt, src: UInt): Bool =
-    op === CsrOp.csrrw || ((op === CsrOp.csrrs || op === CsrOp.csrrc) && src =/= 0.U)
-
-  private def mergeByMask(base: UInt, data: UInt, mask: UInt): UInt = {
-    val bitMask = byteMask(mask)
-    (base & ~bitMask) | (data & bitMask)
-  }
-
-  private def loadExtend(word: UInt, addr: UInt, op: UInt): UInt = {
-    val byteShift = addr(2, 0) << 3
-    val halfShift = addr(2, 1) << 4
-    val wordShift = addr(2) << 5
-    val byte = word >> byteShift
-    val half = word >> halfShift
-    val w = word >> wordShift
-    MuxLookup(op, word)(Seq(
-      LSUOp.lb -> Cat(Fill(56, byte(7)), byte(7, 0)),
-      LSUOp.lbu -> Cat(0.U(56.W), byte(7, 0)),
-      LSUOp.lh -> Cat(Fill(48, half(15)), half(15, 0)),
-      LSUOp.lhu -> Cat(0.U(48.W), half(15, 0)),
-      LSUOp.lw -> Cat(Fill(32, w(31)), w(31, 0)),
-      LSUOp.lwu -> Cat(0.U(32.W), w(31, 0)),
-      LSUOp.ld -> word
-    ))
-  }
-
   // ============================================================
   // Registers and wires
   // ============================================================
@@ -426,31 +87,6 @@ class Backend(implicit p: CoreParams) extends Module {
   val rf = RegInit(VecInit(Seq.fill(32)(0.U(p.xlen.W))))
   val cycleCnt = RegInit(0.U(p.xlen.W))
   val perf = RegInit(0.U.asTypeOf(new BackendPerfCounters))
-  val mstatus = RegInit(mstatusMppM)
-  val mtvec = RegInit(0.U(p.xlen.W))
-  val mepc = RegInit(0.U(p.xlen.W))
-  val mcause = RegInit(0.U(p.xlen.W))
-  val mtval = RegInit(0.U(p.xlen.W))
-  val mie = RegInit(0.U(p.xlen.W))
-  val mip = RegInit(0.U(p.xlen.W))
-  val mscratch = RegInit(0.U(p.xlen.W))
-  val pmpcfg0 = RegInit(0.U(p.xlen.W))
-  val pmpaddr0 = RegInit(0.U(p.xlen.W))
-  val privilegeMode = RegInit(3.U(2.W))
-  private val mstatusMieBit = 3
-  private val mstatusMpieBit = 7
-  private val mstatusMieMask = (BigInt(1) << mstatusMieBit).U(p.xlen.W)
-  private val mstatusMpieMask = (BigInt(1) << mstatusMpieBit).U(p.xlen.W)
-  private val msipMask = (BigInt(1) << 3).U(p.xlen.W)
-  private val mtipMask = (BigInt(1) << 7).U(p.xlen.W)
-  private val meipMask = (BigInt(1) << 11).U(p.xlen.W)
-  val linePendingMask =
-    Mux(io.msip, msipMask, 0.U(p.xlen.W)) |
-    Mux(io.mtip, mtipMask, 0.U(p.xlen.W)) |
-    Mux(io.meip, meipMask, 0.U(p.xlen.W))
-  val mipRead = mip | linePendingMask
-  val enabledInterrupts = mie & mipRead
-  val csrTime = Mux(io.time.valid, io.time.bits, cycleCnt)
   cycleCnt := cycleCnt + 1.U
   io.perf := perf
 
@@ -475,6 +111,41 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_is_cmo = RegInit(false.B)
   val w_victim_tag = RegInit(0.U.asTypeOf(new DCTag))
   val w_victim_valid = RegInit(false.B)
+
+  val csr = Module(new BackendCsr)
+  val csrWriteCalcAddr = WireDefault(0.U(12.W))
+  val csrWriteCalcOp = WireDefault(CsrOp.none)
+  val csrWriteCalcOld = WireDefault(0.U(p.xlen.W))
+  val csrWriteCalcSrc = WireDefault(0.U(p.xlen.W))
+  val csrTrapValid = WireDefault(false.B)
+  val csrTrapIsInterrupt = WireDefault(false.B)
+  val csrTrapCode = WireDefault(0.U(p.xlen.W))
+  val csrTrapPc = WireDefault(0.U(p.addrBits.W))
+  val csrTrapMtval = WireDefault(0.U(p.xlen.W))
+  val csrMretCommit = WireDefault(false.B)
+  val csrWriteCommitValid = WireDefault(false.B)
+  val csrWriteCommitAddr = WireDefault(0.U(12.W))
+  val csrWriteCommitData = WireDefault(0.U(p.xlen.W))
+  csr.io.hartId := io.hartId
+  csr.io.time := io.time
+  csr.io.cycle := cycleCnt
+  csr.io.msip := io.msip
+  csr.io.mtip := io.mtip
+  csr.io.meip := io.meip
+  csr.io.readAddr := e_uop.csrAddr
+  csr.io.writeCalc.addr := csrWriteCalcAddr
+  csr.io.writeCalc.op := csrWriteCalcOp
+  csr.io.writeCalc.old := csrWriteCalcOld
+  csr.io.writeCalc.src := csrWriteCalcSrc
+  csr.io.trapCommit.valid := csrTrapValid
+  csr.io.trapCommit.isInterrupt := csrTrapIsInterrupt
+  csr.io.trapCommit.code := csrTrapCode
+  csr.io.trapCommit.pc := csrTrapPc
+  csr.io.trapCommit.mtval := csrTrapMtval
+  csr.io.mretCommit := csrMretCommit
+  csr.io.writeCommit.valid := csrWriteCommitValid
+  csr.io.writeCommit.addr := csrWriteCommitAddr
+  csr.io.writeCommit.data := csrWriteCommitData
 
   val v_gpr = RegInit(VecInit(Seq.fill(p.longLatencySlots)(0.U(5.W))))
   val div_wb_pending_valid = RegInit(false.B)
@@ -652,16 +323,7 @@ class Backend(implicit p: CoreParams) extends Module {
   io.diffDelayedWbRd := 0.U
   io.diffDelayedWbData := 0.U
   io.diffRf := 0.U.asTypeOf(Vec(32, UInt(p.xlen.W)))
-  io.diffCsr := 0.U.asTypeOf(new CoreCsrState)
-  io.diffCsr.privilegeMode := Cat(0.U((p.xlen - 2).W), privilegeMode)
-  io.diffCsr.mstatus := mstatus
-  io.diffCsr.mepc := mepc
-  io.diffCsr.mtval := mtval
-  io.diffCsr.mtvec := mtvec
-  io.diffCsr.mcause := mcause
-  io.diffCsr.mip := mipRead
-  io.diffCsr.mie := mie
-  io.diffCsr.mscratch := mscratch
+  io.diffCsr := csr.io.diff
   io.diffTrapValid := false.B
   io.diffTrapIsInterrupt := false.B
   io.diffTrapCode := 0.U
@@ -870,12 +532,8 @@ class Backend(implicit p: CoreParams) extends Module {
 
   io.inst.ready := !d_stall
   val d_fire = io.inst.valid && io.inst.ready
-  val d_interrupt_enabled = mstatus(mstatusMieBit) && (enabledInterrupts =/= 0.U)
-  val d_interrupt_cause = Mux(
-    enabledInterrupts(11),
-    11.U(4.W),
-    Mux(enabledInterrupts(3), 3.U(4.W), Mux(enabledInterrupts(7), 7.U(4.W), 0.U(4.W)))
-  )
+  val d_interrupt_enabled = csr.io.interruptEnabled
+  val d_interrupt_cause = csr.io.interruptCause
   val d_interrupt_take = d_fire && d_interrupt_enabled
   val d_flushed = d_fire && (e_redirect.valid || w_redirect.valid)
   val d_enqueue = d_fire && !d_flushed
@@ -1020,15 +678,19 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_csr_op = w_uop.info.fuType === FuType.csr &&
     (w_uop.info.fuOpType === CsrOp.csrrw || w_uop.info.fuOpType === CsrOp.csrrs || w_uop.info.fuOpType === CsrOp.csrrc)
   val w_csr_src = Mux(w_uop.info.src2Type === SrcType.imm, w_uop.src2, w_uop.src1)
-  val w_csr_writes = w_csr_op && csrWrites(w_uop.info.fuOpType, w_csr_src)
-  val w_csr_write_data = legalizeCsrWrite(w_uop.csrAddr, csrWriteData(w_uop.info.fuOpType, w_result, w_csr_src))
+  csrWriteCalcAddr := w_uop.csrAddr
+  csrWriteCalcOp := w_uop.info.fuOpType(CsrOp.width - 1, 0)
+  csrWriteCalcOld := w_result
+  csrWriteCalcSrc := w_csr_src
+  val w_csr_writes = w_csr_op && csr.io.writeEnable
+  val w_csr_write_data = csr.io.writeData
   val w_csr_bypass_valid = w_valid && !w_uop.flushed &&
     !w_uop.isInterrupt && !w_uop.exceptionValid && !w_uop.info.illegal &&
-    w_csr_writes && csrModeledWritable(w_uop.csrAddr)
+    w_csr_writes && csr.io.writeModeledWritable
   val e_csr_read_data = Mux(
     w_csr_bypass_valid && w_uop.csrAddr === e_uop.csrAddr,
     w_csr_write_data,
-    csrRead(e_uop.csrAddr, cycleCnt)
+    csr.io.readData
   )
 
   val e_result = MuxCase(alu.io.out, Seq(
@@ -1043,31 +705,17 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_is_nemu_trap = w_uop.inst === RV64IInstructions.NEMU_TRAP.value.U
   val w_trap = w_can_commit && !w_is_nemu_trap && (w_uop.isInterrupt || w_uop.exceptionValid || w_uop.info.illegal)
   val w_is_ecall = w_uop.inst === RV64IInstructions.ECALL.value.U
-  val w_ecall_code = Mux(privilegeMode === 0.U, 8.U(16.W), Mux(privilegeMode === 1.U, 9.U(16.W), 11.U(16.W)))
+  val w_ecall_code = Mux(csr.io.privilegeMode === 0.U, 8.U(16.W), Mux(csr.io.privilegeMode === 1.U, 9.U(16.W), 11.U(16.W)))
   val w_trap_code = Mux(
     w_uop.info.illegal && !w_uop.isInterrupt,
     2.U(16.W),
     Mux(w_is_ecall && !w_uop.isInterrupt, w_ecall_code, w_uop.exceptionCode)
   )
   val w_trap_code_xlen = Cat(0.U((p.xlen - 16).W), w_trap_code)
-  val w_interrupt_mcause_flag = Cat(1.B, 0.U((p.xlen - 1).W))
-  val w_trap_mcause = Mux(w_uop.isInterrupt, w_interrupt_mcause_flag | w_trap_code_xlen, w_trap_code_xlen)
   val w_trap_mtval = Mux(
     !w_uop.isInterrupt && w_trap_code === 3.U,
     Cat(0.U((p.xlen - p.addrBits).W), w_uop.pc),
     0.U(p.xlen.W)
-  )
-  val privilegeModeXlen = Cat(0.U((p.xlen - 2).W), privilegeMode)
-  val trapMpp = (privilegeModeXlen << 11)(p.xlen - 1, 0)
-  val trapMstatusNext = legalizeMstatus(
-    (mstatus & ~mstatusMieMask & ~mstatusMpieMask & ~mstatusMppMask) |
-      trapMpp |
-      Mux(mstatus(mstatusMieBit), mstatusMpieMask, 0.U(p.xlen.W))
-  )
-  val mretMstatusNext = legalizeMstatus(
-    (mstatus & ~mstatusMieMask & ~mstatusMpieMask & ~mstatusMppMask) |
-      mstatusMpieMask |
-      Mux(mstatus(mstatusMpieBit), mstatusMieMask, 0.U(p.xlen.W))
   )
   val w_is_amo = w_uop.info.isLsu && LSUOp.isAmo(w_uop.info.fuOpType)
   val w_is_load = w_uop.info.isLsu && (!w_uop.info.isStore || w_is_amo) && !w_is_cmo
@@ -1098,15 +746,18 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_mdu_can_start = w_can_commit && w_is_mdu && w_mdu_needs_wb && !w_trap && !w_miss
   val w_mdu_is_mul = MduCalc.isMulOp(w_uop.info.fuOpType)
   val w_mdu_is_div = MduCalc.isDivOp(w_uop.info.fuOpType)
-  val mtvecBase = Cat(mtvec(p.addrBits - 1, 2), 0.U(2.W))
-  val w_trap_vector_offset = (Cat(0.U((p.addrBits - 16).W), w_trap_code) << 2)(p.addrBits - 1, 0)
-  val w_trap_vector = Mux(
-    w_uop.isInterrupt && mtvec(1, 0) === 1.U,
-    mtvecBase + w_trap_vector_offset,
-    mtvecBase
-  )
+  csrTrapValid := w_trap
+  csrTrapIsInterrupt := w_uop.isInterrupt
+  csrTrapCode := w_trap_code_xlen
+  csrTrapPc := w_uop.pc
+  csrTrapMtval := w_trap_mtval
+  csrMretCommit := w_mret_commit
+  val w_trap_vector = csr.io.trapVector
   val w_csr_write_commit = w_can_commit && !w_trap && !w_mret_commit && !w_miss &&
-    w_csr_writes && csrModeledWritable(w_uop.csrAddr)
+    w_csr_writes && csr.io.writeModeledWritable
+  csrWriteCommitValid := w_csr_write_commit
+  csrWriteCommitAddr := w_uop.csrAddr
+  csrWriteCommitData := w_csr_write_data
 
   mulPipe.io.in.valid := w_mdu_can_start && w_mdu_is_mul
   mulPipe.io.in.bits.src1 := w_uop.src1
@@ -1129,7 +780,7 @@ class Backend(implicit p: CoreParams) extends Module {
   w_redirect.bits := Mux(
     w_trap,
     w_trap_vector,
-    Mux(w_mret_commit, mepc(p.addrBits - 1, 0), Mux(w_miss, w_uop.pc, (w_uop.pc + 4.U)(p.addrBits - 1, 0)))
+    Mux(w_mret_commit, csr.io.mretTarget, Mux(w_miss, w_uop.pc, (w_uop.pc + 4.U)(p.addrBits - 1, 0)))
   )
 
   val w_tensor_issue = w_can_commit && !w_trap && !w_mret_commit && w_is_tensor
@@ -1219,47 +870,6 @@ class Backend(implicit p: CoreParams) extends Module {
   }
   io.diffRf := diff_rf
 
-  val diffMstatus = WireDefault(mstatus)
-  val diffMepc = WireDefault(mepc)
-  val diffMtval = WireDefault(mtval)
-  val diffMtvec = WireDefault(mtvec)
-  val diffMcause = WireDefault(mcause)
-  val diffMip = WireDefault(mipRead)
-  val diffMie = WireDefault(mie)
-  val diffMscratch = WireDefault(mscratch)
-  val diffPrivilegeMode = WireDefault(Cat(0.U((p.xlen - 2).W), privilegeMode))
-  val mretPrivilegeMode = mstatus(12, 11)
-  when(w_trap) {
-    diffPrivilegeMode := 3.U
-    diffMstatus := trapMstatusNext
-    diffMepc := w_uop.pc
-    diffMtval := w_trap_mtval
-    diffMcause := w_trap_mcause
-  }.elsewhen(w_mret_commit) {
-    diffPrivilegeMode := Cat(0.U((p.xlen - 2).W), mretPrivilegeMode)
-    diffMstatus := mretMstatusNext
-  }.elsewhen(w_csr_write_commit) {
-    switch(w_uop.csrAddr) {
-      is("h300".U) { diffMstatus := w_csr_write_data }
-      is("h304".U) { diffMie := w_csr_write_data }
-      is("h305".U) { diffMtvec := w_csr_write_data }
-      is("h340".U) { diffMscratch := w_csr_write_data }
-      is("h341".U) { diffMepc := w_csr_write_data }
-      is("h342".U) { diffMcause := w_csr_write_data }
-      is("h343".U) { diffMtval := w_csr_write_data }
-      is("h344".U) { diffMip := w_csr_write_data | linePendingMask }
-    }
-  }
-  io.diffCsr.privilegeMode := diffPrivilegeMode
-  io.diffCsr.mstatus := diffMstatus
-  io.diffCsr.mepc := diffMepc
-  io.diffCsr.mtval := diffMtval
-  io.diffCsr.mtvec := diffMtvec
-  io.diffCsr.mcause := diffMcause
-  io.diffCsr.mip := diffMip
-  io.diffCsr.mie := diffMie
-  io.diffCsr.mscratch := diffMscratch
-
   when(w_tensor_issue) {
     tensorBusy := true.B
     tensorRd := w_uop.rd
@@ -1282,30 +892,6 @@ class Backend(implicit p: CoreParams) extends Module {
   assert(!(w_rfen && v_rfen && w_uop.rd === v_rf),
     "Normal W writeback and long writeback target the same GPR")
   rf(0) := 0.U
-
-  when(w_trap) {
-    privilegeMode := 3.U
-    mstatus := trapMstatusNext
-    mepc := w_uop.pc
-    mcause := w_trap_mcause
-    mtval := w_trap_mtval
-  }.elsewhen(w_mret_commit) {
-    privilegeMode := mretPrivilegeMode
-    mstatus := mretMstatusNext
-  }.elsewhen(w_csr_write_commit) {
-    switch(w_uop.csrAddr) {
-      is("h300".U) { mstatus := w_csr_write_data }
-      is("h304".U) { mie := w_csr_write_data }
-      is("h305".U) { mtvec := w_csr_write_data }
-      is("h340".U) { mscratch := w_csr_write_data }
-      is("h341".U) { mepc := w_csr_write_data }
-      is("h342".U) { mcause := w_csr_write_data }
-      is("h343".U) { mtval := w_csr_write_data }
-      is("h344".U) { mip := w_csr_write_data }
-      is("h3a0".U) { pmpcfg0 := w_csr_write_data }
-      is("h3b0".U) { pmpaddr0 := w_csr_write_data }
-    }
-  }
 
   val d_stall_sample = io.inst.valid && d_stall
   perf.cycles := perf.cycles + 1.U
