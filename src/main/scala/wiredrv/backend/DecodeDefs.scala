@@ -2,6 +2,7 @@ package wiredrv.backend
 
 import chisel3._
 import chisel3.util._
+import wiredrv.bus.BusOp
 
 object SrcType {
   val width = 3
@@ -112,9 +113,78 @@ object LSUOp {
   val cboInval = "h10".U(width.W)
   val cboClean = "h11".U(width.W)
   val cboFlush = "h12".U(width.W)
+  val amoaddW = "h20".U(width.W)
+  val amoaddD = "h21".U(width.W)
+  val amoswapW = "h22".U(width.W)
+  val amoswapD = "h23".U(width.W)
+  val amoxorW = "h24".U(width.W)
+  val amoxorD = "h25".U(width.W)
+  val amoorW = "h26".U(width.W)
+  val amoorD = "h27".U(width.W)
+  val amoandW = "h28".U(width.W)
+  val amoandD = "h29".U(width.W)
+  val amominW = "h2a".U(width.W)
+  val amominD = "h2b".U(width.W)
+  val amomaxW = "h2c".U(width.W)
+  val amomaxD = "h2d".U(width.W)
+  val amominuW = "h2e".U(width.W)
+  val amominuD = "h2f".U(width.W)
+  val amomaxuW = "h30".U(width.W)
+  val amomaxuD = "h31".U(width.W)
+  val amocasW = "h32".U(width.W)
+  val amocasD = "h33".U(width.W)
 
   def isStore(op: UInt): Bool =
     op === sb || op === sh || op === sw || op === sd
+
+  def isAmo(op: UInt): Bool =
+    op === amoaddW || op === amoaddD ||
+      op === amoswapW || op === amoswapD ||
+      op === amoxorW || op === amoxorD ||
+      op === amoorW || op === amoorD ||
+      op === amoandW || op === amoandD ||
+      op === amominW || op === amominD ||
+      op === amomaxW || op === amomaxD ||
+      op === amominuW || op === amominuD ||
+      op === amomaxuW || op === amomaxuD ||
+      op === amocasW || op === amocasD
+
+  def isAmoCas(op: UInt): Bool =
+    op === amocasW || op === amocasD
+
+  def isAmoW(op: UInt): Bool =
+    op === amoaddW || op === amoswapW || op === amoxorW || op === amoorW ||
+      op === amoandW || op === amominW || op === amomaxW || op === amominuW ||
+      op === amomaxuW || op === amocasW
+
+  def isAmoD(op: UInt): Bool =
+    op === amoaddD || op === amoswapD || op === amoxorD || op === amoorD ||
+      op === amoandD || op === amominD || op === amomaxD || op === amominuD ||
+      op === amomaxuD || op === amocasD
+
+  def amoBusOp(op: UInt): BusOp.Type =
+    MuxLookup(op, BusOp.ReadOnly)(Seq(
+      amoaddW -> BusOp.Add,
+      amoaddD -> BusOp.Add,
+      amoandW -> BusOp.Clr,
+      amoandD -> BusOp.Clr,
+      amoorW -> BusOp.Set,
+      amoorD -> BusOp.Set,
+      amoxorW -> BusOp.Eor,
+      amoxorD -> BusOp.Eor,
+      amomaxW -> BusOp.SMax,
+      amomaxD -> BusOp.SMax,
+      amominW -> BusOp.SMin,
+      amominD -> BusOp.SMin,
+      amomaxuW -> BusOp.UMax,
+      amomaxuD -> BusOp.UMax,
+      amominuW -> BusOp.UMin,
+      amominuD -> BusOp.UMin,
+      amoswapW -> BusOp.Swap,
+      amoswapD -> BusOp.Swap,
+      amocasW -> BusOp.CAS,
+      amocasD -> BusOp.CAS
+    ))
 }
 
 object RV64IInstructions {
@@ -203,6 +273,29 @@ object RV64MInstructions {
   val REMUW = BitPat("b0000001??????????111?????0111011")
 }
 
+object RV64AInstructions {
+  val AMOADD_W = BitPat("b00000????????????010?????0101111")
+  val AMOADD_D = BitPat("b00000????????????011?????0101111")
+  val AMOSWAP_W = BitPat("b00001????????????010?????0101111")
+  val AMOSWAP_D = BitPat("b00001????????????011?????0101111")
+  val AMOXOR_W = BitPat("b00100????????????010?????0101111")
+  val AMOXOR_D = BitPat("b00100????????????011?????0101111")
+  val AMOOR_W = BitPat("b01000????????????010?????0101111")
+  val AMOOR_D = BitPat("b01000????????????011?????0101111")
+  val AMOAND_W = BitPat("b01100????????????010?????0101111")
+  val AMOAND_D = BitPat("b01100????????????011?????0101111")
+  val AMOMIN_W = BitPat("b10000????????????010?????0101111")
+  val AMOMIN_D = BitPat("b10000????????????011?????0101111")
+  val AMOMAX_W = BitPat("b10100????????????010?????0101111")
+  val AMOMAX_D = BitPat("b10100????????????011?????0101111")
+  val AMOMINU_W = BitPat("b11000????????????010?????0101111")
+  val AMOMINU_D = BitPat("b11000????????????011?????0101111")
+  val AMOMAXU_W = BitPat("b11100????????????010?????0101111")
+  val AMOMAXU_D = BitPat("b11100????????????011?????0101111")
+  val AMOCAS_W = BitPat("b00101????????????010?????0101111")
+  val AMOCAS_D = BitPat("b00101????????????011?????0101111")
+}
+
 abstract class RVDecodeBase {
   def generate(): List[UInt]
 }
@@ -237,6 +330,7 @@ trait DecodeConstants {
 object RV64IDecodeTable extends DecodeConstants {
   import RV64IInstructions._
   import RV64MInstructions._
+  import RV64AInstructions._
 
   val table: Array[(BitPat, List[UInt])] = Array(
     CUSTOM0 -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.tensor, rwen = true).generate(),
@@ -263,6 +357,26 @@ object RV64IDecodeTable extends DecodeConstants {
     SH     -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.sh, selImm = ImmSel.s).generate(),
     SW     -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.sw, selImm = ImmSel.s).generate(),
     SD     -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.sd, selImm = ImmSel.s).generate(),
+    AMOADD_W -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amoaddW, rwen = true).generate(),
+    AMOADD_D -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amoaddD, rwen = true).generate(),
+    AMOSWAP_W -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amoswapW, rwen = true).generate(),
+    AMOSWAP_D -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amoswapD, rwen = true).generate(),
+    AMOXOR_W -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amoxorW, rwen = true).generate(),
+    AMOXOR_D -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amoxorD, rwen = true).generate(),
+    AMOOR_W -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amoorW, rwen = true).generate(),
+    AMOOR_D -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amoorD, rwen = true).generate(),
+    AMOAND_W -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amoandW, rwen = true).generate(),
+    AMOAND_D -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amoandD, rwen = true).generate(),
+    AMOMIN_W -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amominW, rwen = true).generate(),
+    AMOMIN_D -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amominD, rwen = true).generate(),
+    AMOMAX_W -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amomaxW, rwen = true).generate(),
+    AMOMAX_D -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amomaxD, rwen = true).generate(),
+    AMOMINU_W -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amominuW, rwen = true).generate(),
+    AMOMINU_D -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amominuD, rwen = true).generate(),
+    AMOMAXU_W -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amomaxuW, rwen = true).generate(),
+    AMOMAXU_D -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amomaxuD, rwen = true).generate(),
+    AMOCAS_W -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amocasW, rwen = true).generate(),
+    AMOCAS_D -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.lsu, fuOp = LSUOp.amocasD, rwen = true).generate(),
     ADDI   -> RVDecode(src1 = SrcType.reg, src2 = SrcType.imm, fu = FuType.alu, fuOp = AluOp.add, rwen = true, selImm = ImmSel.i).generate(),
     SLTI   -> RVDecode(src1 = SrcType.reg, src2 = SrcType.imm, fu = FuType.alu, fuOp = AluOp.slt, rwen = true, selImm = ImmSel.i).generate(),
     SLTIU  -> RVDecode(src1 = SrcType.reg, src2 = SrcType.imm, fu = FuType.alu, fuOp = AluOp.sltu, rwen = true, selImm = ImmSel.i).generate(),

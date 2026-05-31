@@ -60,8 +60,9 @@ class WiredCore(implicit p: CoreParams) extends Module {
   val backend = Module(new Backend)
   val imemToAxi = Module(new BusToAxi(p.outerBusWidth))
   val dmemToAxi = Module(new BusToAxi(p.innerBusWidth))
+  val dmemAtomicToAxi = Module(new BusToAxi(p.outerBusWidth))
   val dmemWidthUp = Module(new AxiNarrowToWide(innerAxi, outerAxi, buffer = 4))
-  val xbar = Module(new LmssAxiXbar(Seq(outerAxi, outerAxi)))
+  val xbar = Module(new LmssAxiXbar(Seq(outerAxi, outerAxi, outerAxi)))
 
   private val sramBroadcast = SramHelper.genBroadCastBundleTop()
   sramBroadcast := io.dft.toSramBroadCastBundle
@@ -110,9 +111,11 @@ class WiredCore(implicit p: CoreParams) extends Module {
 
   imemToAxi.io.in <> frontend.io.bus
   dmemToAxi.io.in <> backend.io.bus
+  dmemAtomicToAxi.io.in <> backend.io.atomicBus
   dmemWidthUp.io.mst <> dmemToAxi.io.out
 
   xbar.io.upstream(0) <> imemToAxi.io.out
   xbar.io.upstream(1) <> dmemWidthUp.io.slv
+  xbar.io.upstream(2) <> dmemAtomicToAxi.io.out
   io.mem <> xbar.io.downstream.head
 }

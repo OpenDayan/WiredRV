@@ -310,6 +310,7 @@ class Frontend(implicit p: CoreParams) extends Module {
   io.bus.a.valid := rAValid
   io.bus.a.bits.address := p.icacheGetTag(f2Inst.pc) ## p.icacheGetSet(f2Inst.pc) ## 0.U(p.icacheLineBits.W)
   io.bus.a.bits.data := 0.U
+  io.bus.a.bits.compare := 0.U
   io.bus.a.bits.id := 0.U
   io.bus.a.bits.mask := Fill(fetchBeatBytes, 1.U(1.W))
   io.bus.a.bits.size := 6.U

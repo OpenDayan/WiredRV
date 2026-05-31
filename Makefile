@@ -47,8 +47,9 @@ TEST ?= simple
 TESTS ?= $(TEST)
 RISCV_ARCH ?= rv64i
 RISCV_TEST_NEEDS_M := $(filter rv64um,$(ISA_SUITE))
+RISCV_TEST_NEEDS_A := $(filter rv64ua rv32ua,$(ISA_SUITE))
 RISCV_TEST_NEEDS_ZICSR := $(filter rv64um rv64mi rv64si,$(ISA_SUITE))
-RISCV_TEST_BASE_ARCH := $(RISCV_ARCH)$(if $(RISCV_TEST_NEEDS_M),$(if $(findstring m,$(RISCV_ARCH)),,m),)
+RISCV_TEST_BASE_ARCH := $(RISCV_ARCH)$(if $(RISCV_TEST_NEEDS_M),$(if $(findstring m,$(RISCV_ARCH)),,m),)$(if $(RISCV_TEST_NEEDS_A),$(if $(findstring a,$(RISCV_ARCH)),,a),)
 RISCV_TEST_ARCH := $(RISCV_TEST_BASE_ARCH)$(if $(RISCV_TEST_NEEDS_ZICSR),$(if $(findstring zicsr,$(RISCV_TEST_BASE_ARCH)),,_zicsr),)$(if $(filter fence_i,$(TEST)),$(if $(findstring zifencei,$(RISCV_TEST_BASE_ARCH)),,_zifencei),)
 TEST_JOBS ?= $(shell n=$$(nproc 2>/dev/null || echo 1); if [ $$n -gt 8 ]; then echo 8; else echo $$n; fi)
 
@@ -120,7 +121,9 @@ SURVER_TOKEN ?= 00000000
 NO_SERVER ?= 0
 WAVE_DIR ?= $(NOOP_HOME)/wave
 WAVE_PATH ?= $(WAVE_DIR)/$(ISA_SUITE)-$(TEST).fst
-EMU_WAVE_FLAGS := -i $(WORKLOAD_ELF) --diff $(NEMU_REF_SO) -I $(EMU_MAX_INSTR) $(EMU_CYCLE_FLAG) --dump-wave-full --wave-path=$(WAVE_PATH) -e $(WAVE_END)
+EMU_WAVE_DIFF_FLAG := $(if $(filter 1,$(NO_DIFF)),--no-diff,--diff $(NEMU_REF_SO))
+EMU_WAVE_NEMU_PREREQ := $(if $(filter 1,$(NO_DIFF)),,nemu-ref)
+EMU_WAVE_FLAGS := -i $(WORKLOAD_ELF) $(EMU_WAVE_DIFF_FLAG) -I $(EMU_MAX_INSTR) $(EMU_CYCLE_FLAG) --dump-wave-full --wave-path=$(WAVE_PATH) -e $(WAVE_END)
 
 help:
 	@echo "Dependency targets:"
@@ -281,7 +284,7 @@ parallel-riscv-test:
 	REF="$(if $(REF),$(REF),Nemu)" \
 	./scripts/run-riscv-tests-parallel.sh
 
-wave-riscv-test: riscv-test-workload nemu-ref emu-wave
+wave-riscv-test: riscv-test-workload $(EMU_WAVE_NEMU_PREREQ) emu-wave
 	@mkdir -p $(WAVE_DIR)
 	@echo "run difftest and dump waveform to $(WAVE_PATH)"
 	@set +e; \

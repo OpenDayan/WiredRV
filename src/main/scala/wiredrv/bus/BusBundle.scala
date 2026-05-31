@@ -27,6 +27,7 @@ class BusA(width: Int)(implicit p: CoreParams) extends Bundle {
   val address = UInt(p.addrBits.W)
   val mask = UInt((width / 8).W)
   val data = UInt(width.W)
+  val compare = UInt(width.W)
 }
 
 class BusD(width: Int)(implicit p: CoreParams) extends Bundle {

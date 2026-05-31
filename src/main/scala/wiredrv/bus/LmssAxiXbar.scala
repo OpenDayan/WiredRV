@@ -31,13 +31,23 @@ class LmssAxiXbar(mstParams: Seq[AxiParams])(implicit p: CoreParams)
     up.r.bits := 0.U.asTypeOf(new RFlit(axiP))
   }
 
+  val rBusy = RegInit(false.B)
+  val rSel = RegInit(0.U(selBits.W))
   val wBusy = RegInit(false.B)
   val wSel = RegInit(0.U(selBits.W))
+  val wAwSeen = RegInit(false.B)
+  val wNeedsR = RegInit(false.B)
+  val wGotB = RegInit(false.B)
+  val wGotR = RegInit(false.B)
   val writeReqs = VecInit(io.upstream.map(up => up.aw.valid || up.w.valid))
   val writeHasReq = writeReqs.asUInt.orR
   val writePick = PriorityEncoder(writeReqs)
-  val writeActive = wBusy || writeHasReq
   val writeSel = Mux(wBusy, wSel, writePick)
+  val writeSelectedHasAw = io.upstream(writeSel).aw.valid
+  val writeSelectedKnownAtomic = writeSelectedHasAw && io.upstream(writeSel).aw.bits.atop =/= 0.U
+  val writeSelectedUnknown = !writeSelectedHasAw && io.upstream(writeSel).w.valid
+  val writeBlockedByRead = !wBusy && rBusy && (writeSelectedKnownAtomic || writeSelectedUnknown)
+  val writeActive = (wBusy || writeHasReq) && !writeBlockedByRead
 
   down.aw.valid := writeActive && io.upstream(writeSel).aw.valid
   down.aw.bits := io.upstream(writeSel).aw.bits
@@ -57,26 +67,54 @@ class LmssAxiXbar(mstParams: Seq[AxiParams])(implicit p: CoreParams)
   when(!wBusy && (down.aw.fire || down.w.fire)) {
     wBusy := true.B
     wSel := writeSel
+    wAwSeen := down.aw.fire
+    wNeedsR := down.aw.fire && down.aw.bits.atop =/= 0.U
+    wGotB := false.B
+    wGotR := false.B
   }
-  when(down.b.fire) {
+  when(wBusy && down.aw.fire) {
+    wAwSeen := true.B
+    when(down.aw.bits.atop =/= 0.U) {
+      wNeedsR := true.B
+    }
+  }
+  when(down.b.fire && (!wNeedsR || wGotR)) {
     wBusy := false.B
+    wAwSeen := false.B
+    wNeedsR := false.B
+    wGotB := false.B
+    wGotR := false.B
+  }.elsewhen(down.b.fire) {
+    wGotB := true.B
+  }
+  when(wNeedsR && down.r.fire && down.r.bits.last.asBool && wGotB) {
+    wBusy := false.B
+    wAwSeen := false.B
+    wNeedsR := false.B
+    wGotB := false.B
+    wGotR := false.B
+  }.elsewhen(wNeedsR && down.r.fire && down.r.bits.last.asBool) {
+    wGotR := true.B
   }
 
-  val rBusy = RegInit(false.B)
-  val rSel = RegInit(0.U(selBits.W))
   val readReqs = VecInit(io.upstream.map(_.ar.valid))
   val readHasReq = readReqs.asUInt.orR
   val readPick = PriorityEncoder(readReqs)
+  val atomicRActive = wBusy && wNeedsR
+  val writeMayReturnR = (wBusy && !wAwSeen) || atomicRActive ||
+    (!wBusy && writeHasReq && (writeSelectedKnownAtomic || writeSelectedUnknown))
 
-  down.ar.valid := !rBusy && readHasReq
+  down.ar.valid := !rBusy && !writeMayReturnR && readHasReq
   down.ar.bits := io.upstream(readPick).ar.bits
   for (i <- 0 until portCount) {
-    io.upstream(i).ar.ready := !rBusy && (readPick === i.U) && down.ar.ready
+    io.upstream(i).ar.ready := !rBusy && !writeMayReturnR && (readPick === i.U) && down.ar.ready
   }
 
-  down.r.ready := rBusy && io.upstream(rSel).r.ready
+  down.r.ready := Mux(atomicRActive, io.upstream(wSel).r.ready, rBusy && io.upstream(rSel).r.ready)
   for (i <- 0 until portCount) {
-    io.upstream(i).r.valid := rBusy && (rSel === i.U) && down.r.valid
+    io.upstream(i).r.valid :=
+      (atomicRActive && (wSel === i.U) && down.r.valid) ||
+        (!atomicRActive && rBusy && (rSel === i.U) && down.r.valid)
     io.upstream(i).r.bits := down.r.bits
   }
 
