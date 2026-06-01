@@ -147,8 +147,8 @@ class Backend(implicit p: CoreParams) extends Module {
   val v_gpr = RegInit(VecInit(Seq.fill(p.longLatencySlots)(0.U(5.W))))
   val div_wb_pending_valid = RegInit(false.B)
   val div_wb_pending = RegInit(0.U.asTypeOf(new MduWriteback))
-  val tensorBusy = RegInit(false.B)
-  val tensorRd = RegInit(0.U(5.W))
+  val tensorAwaitResp = RegInit(false.B)
+  val tensorRespRd = RegInit(0.U(5.W))
   val tensorHasVslot = RegInit(false.B)
   val tensorVslot = RegInit(0.U(p.longLatencySlotsBits.W))
 
@@ -349,8 +349,9 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_cache_access = d_cache_lookup && !d_lsu_misaligned
   val d_is_mext_long_latency = d_dec.info.fuType === FuType.mdu
   val d_is_div = d_is_mext_long_latency && MduCalc.isDivOp(d_dec.info.fuOpType)
+  val d_is_tensor_resp = d_is_tensor && d_dec.info.tensorExpectsResp
   val d_need_vslot_raw = d_is_uncached || d_lsu_misaligned ||
-    ((d_is_mext_long_latency || d_is_tensor) && d_writes_rd)
+    ((d_is_mext_long_latency || d_is_tensor_resp) && d_writes_rd)
   val e_is_div = e_valid && !e_uop.flushed && e_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(e_uop.info.fuOpType)
   val w_is_div_pipe = w_valid && !w_uop.flushed && w_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(w_uop.info.fuOpType)
   val e_is_tensor_pipe = e_valid && !e_uop.flushed && !e_killed_by_w && e_uop.info.fuType === FuType.tensor
@@ -371,16 +372,17 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_rs1_e_haz = d_rs1_e_raw_haz && !d_lsu_base_e_forward && !(d_rs1_e_forwardable && !d_dec.info.isLsu)
   val d_rs2_e_haz = d_uses_rs2 && hitE(d_rs2) && !d_rs2_e_forwardable
   val d_rd_src_e_haz = d_is_amocas && nonZeroReg(d_rd) && hitE(d_rd)
-  val d_rd_src_var_haz = d_is_amocas && nonZeroReg(d_rd) && hitVar(d_rd) && !longWbHit(d_rd)
-  val d_tensor_rd_e_haz = d_is_tensor && nonZeroReg(d_rd) && hitE(d_rd)
-  val d_e_raw_haz = d_rs1_e_haz || d_rs2_e_haz || d_rd_src_e_haz || d_tensor_rd_e_haz
+  val d_tensor_rd_src_e_haz = d_dec.info.rdAsSrc && nonZeroReg(d_rd) && hitE(d_rd)
+  val d_rd_src_var_haz =
+    (d_is_amocas || d_dec.info.rdAsSrc) && nonZeroReg(d_rd) && hitVar(d_rd) && !longWbHit(d_rd)
+  val d_e_raw_haz = d_rs1_e_haz || d_rs2_e_haz || d_rd_src_e_haz || d_tensor_rd_src_e_haz
   val d_rs1_w_haz = d_uses_rs1 && nonZeroReg(d_rs1) && wGpr === d_rs1
   val d_rs2_w_haz = d_uses_rs2 && nonZeroReg(d_rs2) && wGpr === d_rs2
   val d_w_raw_haz = d_rs1_w_haz || d_rs2_w_haz
   val d_lsu_base_not_ready = d_dec.info.isLsu && d_rs1_e_raw_haz && !d_lsu_base_e_forward
   val d_jr_not_ready = d_is_jalr && d_uses_rs1 && (hitE(d_rs1) || (hitVar(d_rs1) && !longWbHit(d_rs1)))
   val d_no_vslot = d_need_vslot_raw && !vAllocator.io.allocate.valid
-  val d_tensor_busy = d_is_tensor && (tensorBusy || e_is_tensor_pipe || w_is_tensor_pipe || !tensorIssueQueue.io.enq.ready)
+  val d_tensor_busy = d_is_tensor && (tensorAwaitResp || e_is_tensor_pipe || w_is_tensor_pipe || !tensorIssueQueue.io.enq.ready)
   val d_div_resource_busy = d_is_div && d_writes_rd &&
     (e_is_div || w_is_div_pipe || divUnit.io.busy || div_wb_pending_valid)
   val d_cache_busy = lsu.io.cacheBusy
@@ -662,6 +664,7 @@ class Backend(implicit p: CoreParams) extends Module {
   tensorIssueQueue.io.enq.bits.rs1Data := w_uop.src1
   tensorIssueQueue.io.enq.bits.rs2Data := w_uop.src2
   tensorIssueQueue.io.enq.bits.rdData := w_uop.rdData
+  tensorIssueQueue.io.enq.bits.expectsResp := w_uop.info.tensorExpectsResp
   assert(!w_tensor_issue || tensorIssueQueue.io.enq.ready,
     "Tensor issue queue was full at commit")
 
@@ -717,7 +720,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_release_vslot =
     (w_start_refill || (w_can_commit && (w_is_mdu || w_is_tensor) && w_trap)) && w_uop.vslot_valid
 
-  tensorRespReady := tensorBusy && !long_wb_valid && !w_release_vslot &&
+  tensorRespReady := tensorAwaitResp && !long_wb_valid && !w_release_vslot &&
     !lsu.io.uncachedBusy && !lsu.io.misalignedBusy
   val tensor_wb_valid = tensorRespFire && nonZeroReg(io.tensorResp.bits.rd)
   val tensor_release_vslot = tensorRespFire && tensorHasVslot
@@ -761,16 +764,17 @@ class Backend(implicit p: CoreParams) extends Module {
   }
   io.diffRf := diff_rf
 
-  when(w_tensor_issue) {
-    tensorBusy := true.B
-    tensorRd := w_uop.rd
+  when(w_tensor_issue && w_uop.info.tensorExpectsResp) {
+    assert(!tensorAwaitResp, "Tensor response request issued while another response is pending")
+    tensorAwaitResp := true.B
+    tensorRespRd := w_uop.rd
     tensorHasVslot := w_uop.vslot_valid && nonZeroReg(w_uop.rd)
     tensorVslot := w_uop.vslot
   }
   when(tensorRespFire) {
-    assert(io.tensorResp.bits.rd === tensorRd,
+    assert(io.tensorResp.bits.rd === tensorRespRd,
       "Tensor response rd did not match the outstanding Tensor request")
-    tensorBusy := false.B
+    tensorAwaitResp := false.B
     tensorHasVslot := false.B
   }
 

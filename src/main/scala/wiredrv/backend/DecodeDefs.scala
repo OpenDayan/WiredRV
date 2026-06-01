@@ -333,8 +333,8 @@ object RV64IDecodeTable extends DecodeConstants {
   import RV64AInstructions._
 
   val table: Array[(BitPat, List[UInt])] = Array(
-    CUSTOM0 -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.tensor, rwen = true).generate(),
-    TENSOR64 -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.tensor, rwen = true).generate(),
+    CUSTOM0 -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.tensor).generate(),
+    TENSOR64 -> RVDecode(src1 = SrcType.reg, src2 = SrcType.reg, fu = FuType.tensor).generate(),
     NEMU_TRAP -> RVDecode().generate(),
     LUI    -> RVDecode(src2 = SrcType.imm, fu = FuType.alu, fuOp = AluOp.copy2, rwen = true, selImm = ImmSel.u).generate(),
     AUIPC  -> RVDecode(src1 = SrcType.pc, src2 = SrcType.imm, fu = FuType.alu, fuOp = AluOp.add, rwen = true, selImm = ImmSel.u).generate(),

@@ -13,6 +13,8 @@ class DecodeInfo extends Bundle {
   val rs2en = Bool()
   val rden = Bool()
   val rwen = Bool()
+  val rdAsSrc = Bool()
+  val tensorExpectsResp = Bool()
   val isRVT64 = Bool()
   val isRVT32 = Bool()
   val selImm = UInt(ImmSel.width.W)
@@ -48,21 +50,30 @@ class Decode(implicit p: CoreParams) extends Module {
 
   val inst = io.inst
   val decodeBits = ListLookup(inst, RV64IDecodeTable.decodeDefault, RV64IDecodeTable.table)
+  val isTensor32 = inst(6, 0) === "b0001011".U
+  val isTensor64 = inst(6, 0) === "b0111111".U
+  val isTensor = decodeBits(2) === FuType.tensor
+  val isTcsr = isTensor32 && inst(31, 27) === 0.U
+  val isTcsrRead = isTcsr && inst(12)
+  val isTcsrWrite = isTcsr && !inst(12)
+  val isAsyncTensor = isTensor64 || (isTensor32 && !isTcsr)
 
   val info = WireInit(0.U.asTypeOf(new DecodeInfo))
-  info.src1Type := decodeBits(0)
-  info.src2Type := decodeBits(1)
+  info.src1Type := Mux(isTcsr, SrcType.none, decodeBits(0))
+  info.src2Type := Mux(isTcsr, SrcType.none, decodeBits(1))
   info.fuType := decodeBits(2)
   info.fuOpType := decodeBits(3)
-  info.rwen := decodeBits(4)(0)
+  info.rwen := Mux(isTensor, isTcsrRead, decodeBits(4)(0))
   info.selImm := decodeBits(5)
   info.flushPipe := decodeBits(6)(0)
   info.illegal := decodeBits(7)(0)
-  info.rs1en := decodeBits(0) === SrcType.reg
-  info.rs2en := decodeBits(1) === SrcType.reg
+  info.rs1en := info.src1Type === SrcType.reg
+  info.rs2en := info.src2Type === SrcType.reg
   info.rden := info.rwen
-  info.isRVT32 := inst(6, 0) === "b0001011".U
-  info.isRVT64 := inst(6, 0) === "b0111111".U
+  info.rdAsSrc := isTensor && (isTcsrWrite || isAsyncTensor)
+  info.tensorExpectsResp := isTensor && isTcsrRead
+  info.isRVT32 := isTensor32
+  info.isRVT64 := isTensor64
   info.isLsu := decodeBits(2) === FuType.lsu
   info.isAlu := decodeBits(2) === FuType.alu
   info.isStore := info.isLsu && LSUOp.isStore(decodeBits(3))

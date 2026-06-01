@@ -7,6 +7,7 @@ class TensorInst extends Bundle {
   val rs1Data = UInt(64.W)
   val rs2Data = UInt(64.W)
   val rdData = UInt(64.W)
+  val expectsResp = Bool()
 }
 
 class TensorResp extends Bundle {
