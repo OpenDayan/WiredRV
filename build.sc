@@ -10,6 +10,8 @@ val laomaSubsystemPath = depsRoot / "LaomaSubsystem"
 val laomaAxiPath = laomaSubsystemPath / "src" / "main" / "scala" / "lmss" / "axi"
 val laomaXsUtilsPath = laomaSubsystemPath / "xs-utils" / "src" / "main" / "scala"
 val laomaCdePath = laomaSubsystemPath / "rocket-chip" / "dependencies" / "cde" / "cde" / "src"
+val laomaRocketUtilPath = laomaSubsystemPath / "rocket-chip" / "src" / "main" / "scala" / "util"
+val laomaDiplomacyNodesPath = laomaSubsystemPath / "rocket-chip" / "dependencies" / "diplomacy" / "diplomacy" / "src" / "diplomacy" / "nodes"
 val difftestPath = depsRoot / "difftest"
 
 val defaultVerilogTop = "wiredrv.harness.WiredCoreHarnessTop"
@@ -47,7 +49,10 @@ object v {
 
 object difftest extends Cross[DiffTest](Seq(v.chiselVersion))
 object cde extends Cde
+object diplomacyNodes extends Cross[DiplomacyNodes](Seq(v.chiselVersion))
+object rocketUtil extends Cross[RocketUtil](Seq(v.chiselVersion))
 object xsutils extends Cross[XsUtils](Seq(v.chiselVersion))
+object laomaAxi extends Cross[LaomaAxi](Seq(v.chiselVersion))
 object wiredrv extends Cross[WiredRV](Seq(v.chiselVersion))
 
 trait Chisel7Module extends ScalaModule with Cross.Module[String] {
@@ -93,6 +98,36 @@ trait Cde extends ScalaModule {
   }
 }
 
+trait DiplomacyNodes
+    extends HasChisel
+    with Chisel7Module {
+  override def moduleDir = laomaDiplomacyNodesPath
+
+  override def sources = Task.Sources(
+    moduleDir / "HeterogeneousBag.scala"
+  )
+}
+
+trait RocketUtil
+    extends HasChisel
+    with Chisel7Module {
+  override def moduleDir = laomaSubsystemPath / "rocket-chip"
+
+  override def sources = Task.Sources(
+    laomaRocketUtilPath / "package.scala",
+    laomaRocketUtilPath / "Counters.scala",
+    laomaRocketUtilPath / "AsyncResetReg.scala",
+    laomaRocketUtilPath / "ShiftReg.scala",
+    laomaRocketUtilPath / "SynchronizerReg.scala",
+    laomaRocketUtilPath / "Crossing.scala",
+    laomaRocketUtilPath / "AsyncQueue.scala"
+  )
+
+  def diplomacyNodesModule = diplomacyNodes(chiselVersion)
+
+  override def moduleDeps = super.moduleDeps ++ Seq(diplomacyNodesModule)
+}
+
 trait XsUtils
     extends HasChisel
     with Chisel7Module {
@@ -126,6 +161,26 @@ trait XsUtils
   override def moduleDeps = super.moduleDeps ++ Seq(cde)
 }
 
+trait LaomaAxi
+    extends HasChisel
+    with Chisel7Module {
+  override def moduleDir = laomaSubsystemPath
+
+  override def sources = Task.Sources(
+    laomaAxiPath / "package.scala",
+    laomaAxiPath / "AxiNarrowToWide.scala"
+  )
+
+  def rocketUtilModule = rocketUtil(chiselVersion)
+  def xsutilsModule = xsutils(chiselVersion)
+
+  override def moduleDeps = super.moduleDeps ++ Seq(
+    rocketUtilModule,
+    xsutilsModule,
+    cde
+  )
+}
+
 trait WiredRV
     extends WiredRVModule
     with Chisel7Module {
@@ -136,15 +191,17 @@ trait WiredRV
   }
 
   override def sources = Task.Sources(
-    moduleDir / "src" / "main" / "scala",
-    laomaAxiPath / "package.scala",
-    laomaAxiPath / "AxiNarrowToWide.scala"
+    moduleDir / "src" / "main" / "scala"
   )
 
   def difftestModule = difftest(chiselVersion)
   def xsutilsModule = xsutils(chiselVersion)
+  def laomaAxiModule = laomaAxi(chiselVersion)
 
-  override def moduleDeps = super.moduleDeps ++ Seq(xsutilsModule)
+  override def moduleDeps = super.moduleDeps ++ Seq(
+    xsutilsModule,
+    laomaAxiModule
+  )
 
   override def forkArgs = millForkArgs
   override def scalacOptions = super.scalacOptions() ++ Seq("-Xcheckinit")
