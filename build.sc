@@ -1,17 +1,18 @@
 package build
 
 import mill._
-import mill.api.BuildCtx
+import mill.api.{BuildCtx, PathRef}
 import mill.scalalib._
 
 val workspaceRoot = BuildCtx.workspaceRoot
 val depsRoot = workspaceRoot / "deps"
 val laomaSubsystemPath = depsRoot / "LaomaSubsystem"
-val laomaAxiPath = laomaSubsystemPath / "src" / "main" / "scala" / "lmss" / "axi"
-val laomaXsUtilsPath = laomaSubsystemPath / "xs-utils" / "src" / "main" / "scala"
-val laomaCdePath = laomaSubsystemPath / "rocket-chip" / "dependencies" / "cde" / "cde" / "src"
-val laomaRocketUtilPath = laomaSubsystemPath / "rocket-chip" / "src" / "main" / "scala" / "util"
-val laomaDiplomacyNodesPath = laomaSubsystemPath / "rocket-chip" / "dependencies" / "diplomacy" / "diplomacy" / "src" / "diplomacy" / "nodes"
+val laomaRocketChipPath = laomaSubsystemPath / "rocket-chip"
+val laomaCdePath = laomaRocketChipPath / "dependencies" / "cde" / "cde"
+val laomaDiplomacyPath = laomaRocketChipPath / "dependencies" / "diplomacy" / "diplomacy"
+val laomaHardfloatPath = laomaRocketChipPath / "dependencies" / "hardfloat" / "hardfloat"
+val laomaXsUtilsPath = laomaSubsystemPath / "xs-utils"
+val laomaChiselPath = laomaXsUtilsPath / "dep" / "chisel"
 val difftestPath = depsRoot / "difftest"
 
 val defaultVerilogTop = "wiredrv.harness.WiredCoreHarnessTop"
@@ -38,37 +39,32 @@ def gen() = Task.Command {
 }
 
 object v {
+  val scalaBinaryVersion = "2.13"
   val chiselVersion = "7.9.0"
+  val firtoolVersion = "1.140.0"
   val scalaVersion = "2.13.18"
   val scalaTestVersion = "3.2.18"
   val chiselIvy = mvn"org.chipsalliance::chisel:$chiselVersion"
   val chiselPluginIvy = mvn"org.chipsalliance:::chisel-plugin:$chiselVersion"
+  val llvmFirtoolIvy = mvn"org.chipsalliance:llvm-firtool:$firtoolVersion"
   val scalaTestIvy = mvn"org.scalatest::scalatest:$scalaTestVersion"
   val sourcecodeIvy = mvn"com.lihaoyi::sourcecode:0.4.4"
+  val json4sJacksonIvy = mvn"org.json4s::json4s-jackson:4.0.7"
+  val json4sNativeIvy = mvn"io.github.json4s::json4s-native:4.1.0"
+  val mainargsIvy = mvn"com.lihaoyi::mainargs:0.5.0"
+  val osLibIvy = mvn"com.lihaoyi::os-lib:0.10.7"
+  val upickleIvy = mvn"com.lihaoyi::upickle:3.3.1"
+  val firtoolResolverIvy = mvn"org.chipsalliance::firtool-resolver:2.0.1"
+  val scoptIvy = mvn"com.github.scopt::scopt:4.1.0"
+  val commonTextIvy = mvn"org.apache.commons:commons-text:1.15.0"
+  val dataclassIvy = mvn"io.github.alexarchambault::data-class:0.2.7"
+  val scalaReflectIvy = mvn"org.scala-lang:scala-reflect:$scalaVersion"
+  val unrollPluginIvy = mvn"com.lihaoyi:::unroll-plugin:0.3.0"
+  val unrollAnnotationIvy = mvn"com.lihaoyi::unroll-annotation:0.3.0"
 }
 
-object difftest extends Cross[DiffTest](Seq(v.chiselVersion))
-object cde extends Cde
-object diplomacyNodes extends Cross[DiplomacyNodes](Seq(v.chiselVersion))
-object rocketUtil extends Cross[RocketUtil](Seq(v.chiselVersion))
-object xsutils extends Cross[XsUtils](Seq(v.chiselVersion))
-object laomaAxi extends Cross[LaomaAxi](Seq(v.chiselVersion))
-object wiredrv extends Cross[WiredRV](Seq(v.chiselVersion))
-
-trait Chisel7Module extends ScalaModule with Cross.Module[String] {
-  require(crossValue == v.chiselVersion, s"only Chisel ${v.chiselVersion} is supported")
-
-  def chiselVersion: String = crossValue
+trait LocalScalaModule extends ScalaModule {
   def scalaVersion = v.scalaVersion
-  def chiselIvy = v.chiselIvy
-  def chiselPluginIvy = v.chiselPluginIvy
-  def millForkArgs = Seq(
-    s"-Xmx${sys.env.getOrElse("MILL_FORK_XMX", "256G")}",
-    s"-Xss${sys.env.getOrElse("MILL_FORK_XSS", "192m")}"
-  )
-  override def forkEnv = super.forkEnv() ++ Map("NOOP_HOME" -> os.pwd.toString)
-
-  override def mvnDeps = super.mvnDeps() ++ Seq(v.sourcecodeIvy)
 
   override def scalacOptions = super.scalacOptions() ++ Seq(
     "-language:reflectiveCalls",
@@ -78,139 +74,229 @@ trait Chisel7Module extends ScalaModule with Cross.Module[String] {
   )
 }
 
-trait DiffTest
-    extends DiffTestModule
-    with Chisel7Module {
-  override def moduleDir = difftestPath
+trait LocalSbtModule extends SbtModule with LocalScalaModule
 
-  override def sources = Task.Sources {
-    moduleDir / "src" / "main" / "scala"
-  }
-}
-
-trait Cde extends ScalaModule {
+trait LocalCrossSbtModule extends CrossSbtModule {
   def scalaVersion = v.scalaVersion
 
-  override def moduleDir = laomaCdePath
+  override def scalacOptions = super.scalacOptions() ++ Seq(
+    "-language:reflectiveCalls",
+    "-Ymacro-annotations",
+    "-deprecation",
+    "-feature"
+  )
+}
 
-  override def sources = Task.Sources {
-    moduleDir
+trait CommonChiselModule extends HasChisel {
+  def scalaVersion = v.scalaVersion
+  def chiselIvy = None
+  def chiselPluginIvy = Some(v.chiselPluginIvy)
+  def millForkArgs = Seq(
+    s"-Xmx${sys.env.getOrElse("MILL_FORK_XMX", "256G")}",
+    s"-Xss${sys.env.getOrElse("MILL_FORK_XSS", "192m")}"
+  )
+
+  override def forkEnv = super.forkEnv() ++ Map("NOOP_HOME" -> workspaceRoot.toString)
+
+  override def moduleDeps = super.moduleDeps ++ Seq(deps.chiselLib(v.scalaBinaryVersion))
+
+  override def mvnDeps = super.mvnDeps() ++ Seq(
+    v.sourcecodeIvy,
+    v.llvmFirtoolIvy
+  )
+
+  override def scalacOptions = super.scalacOptions() ++ Seq(
+    "-language:reflectiveCalls",
+    "-Ymacro-annotations",
+    "-deprecation",
+    "-feature"
+  )
+}
+
+trait CommonChiselSbtModule extends SbtModule with CommonChiselModule
+
+trait Chisel7Module extends CommonChiselSbtModule with Cross.Module[String] {
+  require(crossValue == v.chiselVersion, s"only Chisel ${v.chiselVersion} is supported")
+
+  def chiselVersion: String = crossValue
+}
+
+object deps extends Module {
+  trait DepScalaModule extends CommonChiselModule
+  trait DepSbtModule extends CommonChiselSbtModule
+
+  object chiselFirrtl extends Cross[ChiselFirrtl](Seq(v.scalaBinaryVersion))
+  trait ChiselFirrtl extends LocalCrossSbtModule {
+    override def moduleDir = laomaChiselPath / "firrtl"
+
+    override def mvnDeps = super.mvnDeps() ++ Seq(
+      v.scoptIvy,
+      v.commonTextIvy,
+      v.osLibIvy,
+      v.json4sNativeIvy,
+      v.dataclassIvy
+    )
+
+    override def scalacOptions = super.scalacOptions() ++ Seq(
+      "-language:existentials",
+      "-language:implicitConversions",
+      "-Yrangepos",
+      "-Xsource-features:infer-override"
+    )
+  }
+
+  object chiselMacros extends Cross[ChiselMacros](Seq(v.scalaBinaryVersion))
+  trait ChiselMacros extends LocalCrossSbtModule {
+    override def moduleDir = laomaChiselPath / "macros"
+
+    override def mvnDeps = super.mvnDeps() ++ Seq(v.scalaReflectIvy)
+  }
+
+  object chiselCore extends Cross[ChiselCore](Seq(v.scalaBinaryVersion))
+  trait ChiselCore extends LocalCrossSbtModule {
+    override def moduleDir = laomaChiselPath / "core"
+
+    override def moduleDeps = super.moduleDeps ++ Seq(
+      chiselFirrtl(v.scalaBinaryVersion),
+      chiselMacros(v.scalaBinaryVersion)
+    )
+
+    override def mvnDeps = super.mvnDeps() ++ Seq(
+      v.osLibIvy,
+      v.upickleIvy,
+      v.firtoolResolverIvy
+    )
+
+    def buildInfo = Task {
+      val outputFile = Task.dest / "chisel3" / "BuildInfo.scala"
+      val firtoolVersionString = "Some(\"" + v.firtoolVersion + "\")"
+      val contents =
+        s"""
+           |package chisel3
+           |case object BuildInfo {
+           |  val buildInfoPackage: String = "chisel3"
+           |  val version: String = "${v.chiselVersion}"
+           |  val scalaVersion: String = "${v.scalaVersion}"
+           |  val firtoolVersion: scala.Option[String] = $firtoolVersionString
+           |  override val toString: String = {
+           |    "buildInfoPackage: %s, version: %s, scalaVersion: %s, firtoolVersion %s".format(
+           |        buildInfoPackage, version, scalaVersion, firtoolVersion
+           |    )
+           |  }
+           |}
+           |""".stripMargin
+      os.write(outputFile, contents, createFolders = true)
+      PathRef(Task.dest)
+    }
+
+    override def generatedSources = Task {
+      super.generatedSources() :+ buildInfo()
+    }
+  }
+
+  object chiselSvsim extends Cross[ChiselSvsim](Seq(v.scalaBinaryVersion))
+  trait ChiselSvsim extends LocalCrossSbtModule {
+    override def moduleDir = laomaChiselPath / "svsim"
+
+    override def compileMvnDeps = super.compileMvnDeps() ++ Seq(v.unrollAnnotationIvy)
+    override def scalacPluginMvnDeps = super.scalacPluginMvnDeps() ++ Seq(v.unrollPluginIvy)
+
+    override def scalacOptions = super.scalacOptions() ++ Seq(
+      "-Xsource-features:case-apply-copy-access"
+    )
+  }
+
+  object chiselLib extends Cross[ChiselLib](Seq(v.scalaBinaryVersion))
+  trait ChiselLib extends LocalCrossSbtModule {
+    override def moduleDir = laomaChiselPath
+
+    override def moduleDeps = super.moduleDeps ++ Seq(
+      chiselCore(v.scalaBinaryVersion),
+      chiselSvsim(v.scalaBinaryVersion)
+    )
+
+    override def compileMvnDeps = super.compileMvnDeps() ++ Seq(v.scalaTestIvy)
+    override def scalacPluginMvnDeps = super.scalacPluginMvnDeps() ++ Seq(v.chiselPluginIvy)
+  }
+
+  object cde extends DepScalaModule {
+    override def moduleDir = laomaCdePath
+  }
+
+  object diplomacy extends DepScalaModule {
+    override def moduleDir = laomaDiplomacyPath
+
+    override def moduleDeps = super.moduleDeps ++ Seq(cde)
+  }
+
+  object hardfloat extends DepSbtModule {
+    override def moduleDir = laomaHardfloatPath
+  }
+
+  object rocketChip extends DepSbtModule {
+    override def moduleDir = laomaRocketChipPath
+
+    override def mvnDeps = super.mvnDeps() ++ Seq(
+      v.json4sJacksonIvy,
+      v.mainargsIvy
+    )
+
+    override def moduleDeps = super.moduleDeps ++ Seq(
+      hardfloat,
+      cde,
+      diplomacy,
+      macros
+    )
+
+    object macros extends DepSbtModule {
+      override def moduleDir = laomaRocketChipPath / "macros"
+
+      override def mvnDeps = super.mvnDeps() ++ Seq(v.scalaReflectIvy)
+    }
+  }
+
+  object xsUtils extends DepSbtModule {
+    override def moduleDir = laomaXsUtilsPath
+
+    override def moduleDeps = super.moduleDeps ++ Seq(
+      rocketChip,
+      cde
+    )
+  }
+
+  object laomaSubsystem extends DepSbtModule {
+    override def moduleDir = laomaSubsystemPath
+
+    override def moduleDeps = super.moduleDeps ++ Seq(
+      rocketChip,
+      xsUtils
+    )
+  }
+
+  object difftest extends DepSbtModule with DiffTestModule {
+    override def moduleDir = difftestPath
   }
 }
 
-trait DiplomacyNodes
-    extends HasChisel
-    with Chisel7Module {
-  override def moduleDir = laomaDiplomacyNodesPath
-
-  override def sources = Task.Sources(
-    moduleDir / "HeterogeneousBag.scala"
-  )
-}
-
-trait RocketUtil
-    extends HasChisel
-    with Chisel7Module {
-  override def moduleDir = laomaSubsystemPath / "rocket-chip"
-
-  override def sources = Task.Sources(
-    laomaRocketUtilPath / "package.scala",
-    laomaRocketUtilPath / "Counters.scala",
-    laomaRocketUtilPath / "AsyncResetReg.scala",
-    laomaRocketUtilPath / "ShiftReg.scala",
-    laomaRocketUtilPath / "SynchronizerReg.scala",
-    laomaRocketUtilPath / "Crossing.scala",
-    laomaRocketUtilPath / "AsyncQueue.scala"
-  )
-
-  def diplomacyNodesModule = diplomacyNodes(chiselVersion)
-
-  override def moduleDeps = super.moduleDeps ++ Seq(diplomacyNodesModule)
-}
-
-trait XsUtils
-    extends HasChisel
-    with Chisel7Module {
-  override def moduleDir = laomaSubsystemPath / "xs-utils"
-
-  override def sources = Task.Sources(
-    laomaXsUtilsPath / "xs" / "utils" / "package.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "GlobalData.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "FileRegisters.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "ResetGen.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "PickOne.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "queue" / "CircularQueuePtr.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "queue" / "FastQueue.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "queue" / "MimoQueue.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "queue" / "OverrideableQueue.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "verilog" / "ClockGate.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "dft" / "package.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "mbist" / "Mbist.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "mbist" / "MbistBus.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "mbist" / "MbistClockGateCell.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "mbist" / "MbistCsvGen.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "mbist" / "MbistPipeline.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SramProto.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SramHelper.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SramInstGen.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SramResetGen.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SramQueue.scala",
-    laomaXsUtilsPath / "xs" / "utils" / "sram" / "SRAMTemplate.scala"
-  )
-
-  override def moduleDeps = super.moduleDeps ++ Seq(cde)
-}
-
-trait LaomaAxi
-    extends HasChisel
-    with Chisel7Module {
-  override def moduleDir = laomaSubsystemPath
-
-  override def sources = Task.Sources(
-    laomaAxiPath / "package.scala",
-    laomaAxiPath / "AxiNarrowToWide.scala"
-  )
-
-  def rocketUtilModule = rocketUtil(chiselVersion)
-  def xsutilsModule = xsutils(chiselVersion)
-
-  override def moduleDeps = super.moduleDeps ++ Seq(
-    rocketUtilModule,
-    xsutilsModule,
-    cde
-  )
-}
+object wiredrv extends Cross[WiredRV](Seq(v.chiselVersion))
 
 trait WiredRV
     extends WiredRVModule
     with Chisel7Module {
   override def moduleDir = workspaceRoot
 
-  override def resources = Task.Sources {
-    moduleDir / "src" / "main" / "resources"
-  }
-
-  override def sources = Task.Sources(
-    moduleDir / "src" / "main" / "scala"
-  )
-
-  def difftestModule = difftest(chiselVersion)
-  def xsutilsModule = xsutils(chiselVersion)
-  def laomaAxiModule = laomaAxi(chiselVersion)
+  def difftestModule = deps.difftest
 
   override def moduleDeps = super.moduleDeps ++ Seq(
-    xsutilsModule,
-    laomaAxiModule
+    deps.laomaSubsystem,
+    deps.xsUtils
   )
 
   override def forkArgs = millForkArgs
   override def scalacOptions = super.scalacOptions() ++ Seq("-Xcheckinit")
 
-  object tests extends ScalaTests with TestModule.ScalaTest {
+  object tests extends SbtTests with TestModule.ScalaTest {
     override def forkArgs = WiredRV.this.millForkArgs
     override def mvnDeps = super.mvnDeps() ++ Seq(v.scalaTestIvy)
-    override def sources = Task.Sources {
-      WiredRV.this.moduleDir / "src" / "test" / "scala"
-    }
   }
 }

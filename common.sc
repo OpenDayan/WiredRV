@@ -5,11 +5,11 @@ import mill.scalalib._
 
 trait HasChisel
   extends ScalaModule {
-  def chiselIvy: Dep
-  def chiselPluginIvy: Dep
+  def chiselIvy: Option[Dep]
+  def chiselPluginIvy: Option[Dep]
 
-  override def mvnDeps = super.mvnDeps() ++ Seq(chiselIvy)
-  override def scalacPluginMvnDeps = super.scalacPluginMvnDeps() ++ Seq(chiselPluginIvy)
+  override def mvnDeps = super.mvnDeps() ++ chiselIvy.toSeq
+  override def scalacPluginMvnDeps = super.scalacPluginMvnDeps() ++ chiselPluginIvy.toSeq
 }
 
 // WiredRV always builds against difftest because the simulation harness exports
