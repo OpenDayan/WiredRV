@@ -345,9 +345,13 @@ class BackendLsu(implicit p: CoreParams) extends Module {
   io.eResp.dcacheLoadHit := io.e.canSideEffect && e_is_load && e_hit
   io.eResp.dcacheStoreHit := io.e.canSideEffect && e_is_store && e_hit
 
-  val w_bus_available =
-    r_state === DCacheRefillState.idle && u_state === UncachedState.idle && m_state === MisalignedState.idle
+  val refillCmoIdle = r_state === DCacheRefillState.idle
+  val uncachedIdle = u_state === UncachedState.idle
+  val misalignedIdle = m_state === MisalignedState.idle
+  val w_bus_available = refillCmoIdle && uncachedIdle && misalignedIdle
   val w_store_commit = io.w.canCommit && !io.w.lsuBypass && io.w.isStore && io.w.hit && !io.w.miss && !io.w.trap
+
+  // W stage launches at most one slow-path controller: refill/CMO, misaligned, or uncached/AMO.
   val w_start_refill = io.w.canCommit && !io.w.trap && !io.w.lsuBypass && io.w.miss && !sq_has_entry &&
     w_bus_available
   val w_start_cmo = io.w.canCommit && !io.w.trap && !io.w.lsuBypass && io.w.isCmo && !sq_has_entry &&
@@ -382,7 +386,7 @@ class BackendLsu(implicit p: CoreParams) extends Module {
   val sq_drain_entry = Mux(sq_drain_sel === 0.U, store_queue(0), store_queue(1))
   val sq_pipeline_lsu_busy = (io.e.canSideEffect && io.e.uop.info.isLsu) || (io.w.canCommit && io.w.uop.info.isLsu)
   val sq_can_drain =
-    r_state === DCacheRefillState.idle && u_state === UncachedState.idle && m_state === MisalignedState.idle &&
+    w_bus_available &&
       !sq_pipeline_lsu_busy && !io.d.readTag && !io.d.readData &&
       !w_start_refill && !w_start_cmo && !w_start_cached_misaligned && !w_start_uncached
   val sq_drain = sq_can_drain && sq_has_entry
@@ -514,8 +518,12 @@ class BackendLsu(implicit p: CoreParams) extends Module {
   val m_bus_data = (Cat(0.U((p.innerBusWidth - 8).W), m_store_byte) << (m_byte_lane << 3))(p.innerBusWidth - 1, 0)
   val m_bus_mask = (1.U(busBytes.W) << m_byte_lane)(busBytes - 1, 0)
 
+  // Bus arbitration priority is refill/CMO, then misaligned, then uncached/AMO.
   val r_uses_bus = r_state =/= DCacheRefillState.idle
   val m_uses_bus = m_send || m_recv
+  val u_uses_bus = u_send || u_recv
+  assert(PopCount(Seq(r_uses_bus, m_uses_bus, u_uses_bus)) <= 1.U,
+    "LSU slow bus users overlapped")
   io.bus.a.valid := Mux(
     r_uses_bus,
     (r_send_read || r_send_write) && r_a_valid,

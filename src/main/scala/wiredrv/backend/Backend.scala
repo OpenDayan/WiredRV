@@ -187,9 +187,13 @@ class Backend(implicit p: CoreParams) extends Module {
     r.valid := false.B
     r.bits := 0.U
   }
-  io.redirects(0) := w_redirect
-  io.redirects(1) := e_redirect
-  io.redirects(2) := d_early_redirect
+  // Frontend/NPC consume lower indexes as higher redirect priority.
+  private val WRedirectIndex = 0
+  private val ERedirectIndex = 1
+  private val DEarlyRedirectIndex = 2
+  io.redirects(WRedirectIndex) := w_redirect
+  io.redirects(ERedirectIndex) := e_redirect
+  io.redirects(DEarlyRedirectIndex) := d_early_redirect
   io.branchUpdate.valid := false.B
   io.branchUpdate.bits := 0.U.asTypeOf(new BranchUpdate)
   io.ifencei := false.B
@@ -415,11 +419,14 @@ class Backend(implicit p: CoreParams) extends Module {
       (w_valid && !w_uop.flushed) ||
       d_cache_busy || d_uncached_busy
   )
-  val d_stall =
+  val d_data_hazard_stall =
     d_rs1_var_haz || d_rs2_var_haz || d_rd_var_haz || d_rd_src_var_haz ||
-      d_e_raw_haz || d_lsu_base_not_ready || d_jr_not_ready ||
-      d_no_vslot || d_tensor_busy || d_div_resource_busy || d_cache_busy || d_uncached_busy ||
-      d_store_queue_wait || d_fence_wait || d_misaligned_wait || d_nemu_trap_wait
+      d_e_raw_haz || d_lsu_base_not_ready || d_jr_not_ready
+  val d_long_latency_stall = d_no_vslot || d_tensor_busy || d_div_resource_busy
+  val d_lsu_cache_stall = d_cache_busy || d_uncached_busy || d_store_queue_wait
+  val d_ordering_stall = d_fence_wait || d_misaligned_wait || d_nemu_trap_wait
+  val d_stall =
+    d_data_hazard_stall || d_long_latency_stall || d_lsu_cache_stall || d_ordering_stall
 
   io.inst.ready := !d_stall
   val d_fire = io.inst.valid && io.inst.ready

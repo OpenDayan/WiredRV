@@ -67,17 +67,22 @@ class Frontend(implicit p: CoreParams) extends Module {
   frontPredRedirect.valid := false.B
   frontPredRedirect.bits := 0.U
 
-  val flushRedir = io.redirects ++ Seq(frontMissReplay)
-  val allRedir = flushRedir ++ Seq(frontPredRedirect)
-  val anyFlushRedir = VecInit(flushRedir.map(_.valid)).asUInt.orR
-  val backRedir = VecInit(io.redirects.map(_.valid)).asUInt.orR
+  val wRedirect = io.redirects(0)
+  val eRedirect = io.redirects(1)
+  val dEarlyRedirect = io.redirects(2)
+  val backendRedirects = Seq(wRedirect, eRedirect, dEarlyRedirect)
+  val flushRedirects = backendRedirects :+ frontMissReplay
+  val allRedirects = flushRedirects :+ frontPredRedirect
+  val anyFlushRedirect = VecInit(flushRedirects.map(_.valid)).asUInt.orR
+  val backendRedirectValid = VecInit(backendRedirects.map(_.valid)).asUInt.orR
 
   val frontStall = WireDefault(false.B)
   val f0ReadFire = Wire(Bool())
   val respQueueFlush = Wire(Bool())
 
   val npc = Module(new NPC).io
-  npc.redirects := allRedir
+  // Redirect priority is W, E, D, icache replay, then frontend prediction.
+  npc.redirects := VecInit(allRedirects)
   val npcReady = Wire(Bool())
   npc.pc.ready := npcReady
   val pc = npc.pc.bits
@@ -130,8 +135,6 @@ class Frontend(implicit p: CoreParams) extends Module {
   val f2Valid = RegInit(false.B)
   val f2Refill = RegInit(false.B)
   val f2Inst = RegInit(0.U.asTypeOf(new FetchPacket))
-  val f2SkidV = RegInit(false.B)
-  val f2Skid = RegInit(0.U.asTypeOf(new FetchPacket))
   val tensor64Pending = RegInit(false.B)
   val tensor64Pc = RegInit(0.U(p.addrBits.W))
   val tensor64Low = RegInit(0.U(32.W))
@@ -201,19 +204,24 @@ class Frontend(implicit p: CoreParams) extends Module {
   respQ.io.enq.bits.inst := rawInst
   assert(!respEnqValid || respQ.io.enq.ready, "frontend fetch response queue overflow")
 
-  val f2Hold = f2Valid && !io.inst.ready && !backRedir
+  // F2 holds the last accepted packet under backend backpressure.
+  val f2Hold = f2Valid && !io.inst.ready && !backendRedirectValid
   val f1Valid = respQ.io.deq.valid
   val f1Hit = respQ.io.deq.bits.hit
   val f1Inst = respQ.io.deq.bits.inst
   val f1CurPc = respQ.io.deq.bits.pc
   val f1CurSet = respQ.io.deq.bits.set
   val f1CurTag = respQ.io.deq.bits.tag
-  val f2RefillStart = !frontStall && f1Valid && !anyFlushRedir && !f1Hit
-  val f2HitAccept = !frontStall && f1Valid && !anyFlushRedir && f1Hit
+  val f2RefillStart = !frontStall && f1Valid && !anyFlushRedirect && !f1Hit
+  val f2HitAccept = !frontStall && f1Valid && !anyFlushRedirect && f1Hit
   respQ.io.deq.ready := f2HitAccept || f2RefillStart
+
+  // Tensor64 packets consume two adjacent 32-bit fetch responses.
   val f1IsTensor64Low = f1Inst(6, 0) === "b0111111".U && !tensor64Pending
   val f1Tensor64Complete = f2HitAccept && tensor64Pending
   val f1EmitInst = f2HitAccept && !f1IsTensor64Low
+
+  // Frontend prediction is lowest-priority redirect source.
   val f1IsJal = f1Inst(6, 0) === "b1101111".U
   val f1JalImm = Cat(Fill(p.addrBits - 21, f1Inst(31)), f1Inst(31), f1Inst(19, 12), f1Inst(20), f1Inst(30, 21), 0.U(1.W))
   val f1JalTarget = (f1CurPc + f1JalImm)(p.addrBits - 1, 0)
@@ -227,19 +235,21 @@ class Frontend(implicit p: CoreParams) extends Module {
   val f1PredictBranch = f1CanPredict && f1IsBranch && f1BranchTakenPred
   val f1PredictJump = f1PredictJal || f1PredictBranch
   val f1PredictTarget = Mux(f1PredictJal, f1JalTarget, f1BranchTarget)
-  respQueueFlush := anyFlushRedir || f1PredictJump || io.ifencei
+  respQueueFlush := anyFlushRedirect || f1PredictJump || io.ifencei
   val missSetValidVec = VecInit(icValid.map(_(f1CurSet)))
   val missSetHasValid = missSetValidVec.asUInt.orR
   val missSetFull = missSetValidVec.asUInt.andR
   frontStall := f2Hold || f2Refill
   val respFree = respQueueDepth.U - respQ.io.count - respInFlight
   val canIssueFetch = respFree =/= 0.U
+
+  // F0 issues at most one SRAM read when F2/refill and response queue space allow it.
   f0ReadFire := !frontStall && !f2Refill && !f2RefillStart && canIssueFetch && icSramReadReady && !io.ifencei
   npcReady := f0ReadFire
   frontPredRedirect.valid := f1PredictJump
   frontPredRedirect.bits := f1PredictTarget
 
-  when(backRedir || f1PredictJump || io.ifencei) {
+  when(backendRedirectValid || f1PredictJump || io.ifencei) {
     tensor64Pending := false.B
   }.elsewhen(f2HitAccept && f1IsTensor64Low) {
     tensor64Pending := true.B
@@ -269,15 +279,10 @@ class Frontend(implicit p: CoreParams) extends Module {
       (tensor64Pc + 8.U)(p.addrBits - 1, 0),
       f1PredictTarget
     )
-    when(f2Valid) {
-      f2SkidV := !io.inst.ready && !backRedir
-      f2Skid := f2Inst
-    }
     io.inst.valid := f2Valid
     io.inst.bits := f2Inst
   }.otherwise {
-    f2SkidV := false.B
-    when(anyFlushRedir) {
+    when(anyFlushRedirect) {
       f2Valid := false.B
     }
     io.inst.valid := f2Valid
@@ -380,7 +385,7 @@ class Frontend(implicit p: CoreParams) extends Module {
   when(io.ifencei) {
     perf.ifencei := perf.ifencei + 1.U
   }
-  when(backRedir) {
+  when(backendRedirectValid) {
     perf.backendRedirect := perf.backendRedirect + 1.U
   }
 }
