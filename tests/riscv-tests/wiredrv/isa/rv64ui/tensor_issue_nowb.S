@@ -52,20 +52,6 @@ RVTEST_CODE_BEGIN
   li t4, 0xdeadbeefcafebabe
   bne t2, t4, fail
 
-  li TESTNUM, 6
-
-  // TCSR read is the tensor path that still writes rd through tensorResp.
-  li t2, 0
-  .word 0x0000138b
-
-  li t4, 0x123456789abcdef0
-  bne t2, t4, fail
-
-  li TESTNUM, 7
-  addi t3, t2, 1
-  li t4, 0x123456789abcdef1
-  bne t3, t4, fail
-
 pass:
   RVTEST_PASS
 

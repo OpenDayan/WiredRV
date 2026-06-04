@@ -53,25 +53,32 @@ class Decode(implicit p: CoreParams) extends Module {
   val isTensor32 = inst(6, 0) === "b0001011".U
   val isTensor64 = inst(6, 0) === "b0111111".U
   val isTensor = decodeBits(2) === FuType.tensor
-  val isTcsr = isTensor32 && inst(31, 27) === 0.U
-  val isTcsrRead = isTcsr && inst(12)
-  val isTcsrWrite = isTcsr && !inst(12)
-  val isAsyncTensor = isTensor64 || (isTensor32 && !isTcsr)
+  val tensorFunct3 = inst(14, 12)
+  val isTcsrAccess = isTensor32 && inst(31, 27) === 0.U
+  val isSbAccess = isTensor32 && inst(31, 27) === 1.U
+  val isControlAccess = isTcsrAccess || isSbAccess
+  val isTcsrRead = isTcsrAccess && tensorFunct3 === "b100".U
+  val isSbRead = isSbAccess && (tensorFunct3 === "b100".U || tensorFunct3 === "b101".U)
+  val isRespRead = isTcsrRead || isSbRead
+  val isTcsrWrite = isTcsrAccess && tensorFunct3 === "b000".U
+  val isSbWrite = isSbAccess && tensorFunct3 === "b000".U
+  val isControlWrite = isTcsrWrite || isSbWrite
+  val isAsyncTensor = isTensor64 || (isTensor32 && !isControlAccess)
 
   val info = WireInit(0.U.asTypeOf(new DecodeInfo))
-  info.src1Type := Mux(isTcsr, SrcType.none, decodeBits(0))
-  info.src2Type := Mux(isTcsr, SrcType.none, decodeBits(1))
+  info.src1Type := Mux(isControlAccess, SrcType.none, decodeBits(0))
+  info.src2Type := Mux(isControlAccess, SrcType.none, decodeBits(1))
   info.fuType := decodeBits(2)
   info.fuOpType := decodeBits(3)
-  info.rwen := Mux(isTensor, isTcsrRead, decodeBits(4)(0))
+  info.rwen := Mux(isTensor, isRespRead, decodeBits(4)(0))
   info.selImm := decodeBits(5)
   info.flushPipe := decodeBits(6)(0)
   info.illegal := decodeBits(7)(0)
   info.rs1en := info.src1Type === SrcType.reg
   info.rs2en := info.src2Type === SrcType.reg
   info.rden := info.rwen
-  info.rdAsSrc := isTensor && (isTcsrWrite || isAsyncTensor)
-  info.tensorExpectsResp := isTensor && isTcsrRead
+  info.rdAsSrc := isTensor && (isControlWrite || isAsyncTensor)
+  info.tensorExpectsResp := isTensor && isRespRead
   info.isRVT32 := isTensor32
   info.isRVT64 := isTensor64
   info.isLsu := decodeBits(2) === FuType.lsu
