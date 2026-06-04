@@ -349,7 +349,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_exception_code = Mux(d_jump_target_misaligned, 0.U(16.W),
     Mux(d_amo_misaligned, 6.U(16.W), d_dec.exceptionCode))
   val d_is_uncached = d_dec.info.isLsu && !d_is_cmo && (d_is_amo || inRegions(d_lsu_addr, p.uncachedRegions))
-  val d_cache_lookup = d_dec.info.isLsu && !d_is_uncached && !d_is_cmo
+  val d_cache_lookup = d_dec.info.isLsu && !d_is_uncached
   val d_cache_access = d_cache_lookup && !d_lsu_misaligned
   val d_is_mext_long_latency = d_dec.info.fuType === FuType.mdu
   val d_is_div = d_is_mext_long_latency && MduCalc.isDivOp(d_dec.info.fuOpType)
@@ -682,7 +682,7 @@ class Backend(implicit p: CoreParams) extends Module {
 
   io.ifencei := w_flush_pipe && w_is_fence_i && !w_miss
 
-  val w_commit_valid = w_can_commit && !w_miss && !w_trap && !w_lsu_bypass
+  val w_commit_valid = w_can_commit && !w_miss && !w_trap && !w_lsu_bypass && !w_is_cmo
   val w_exit = w_commit_valid && w_is_nemu_trap
   io.commit.valid := w_commit_valid
   io.commit.bits.pc := w_uop.pc

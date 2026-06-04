@@ -175,6 +175,8 @@ class BackendLsu(implicit p: CoreParams) extends Module {
   val r_is_cmo = RegInit(false.B)
   val r_cmo_hit = RegInit(false.B)
   val r_cmo_op = RegInit(LSUOp.none)
+  val r_cmo_pc = RegInit(0.U(p.addrBits.W))
+  val r_cmo_inst = RegInit(0.U(32.W))
   val r_after_wb_refill = RegInit(false.B)
   val r_refill_half = RegInit(0.U(p.innerBusWidth.W))
   val r_wb_word = RegInit(0.U(p.xlen.W))
@@ -296,7 +298,7 @@ class BackendLsu(implicit p: CoreParams) extends Module {
     dc_valid(i)(e_set) && dc_tags(i).io.r.resp.data(0).tag === e_tag
   })
   val e_raw_hit = e_way_hits.asUInt.orR
-  val e_cache_lookup = io.e.canSideEffect && e_uop.info.isLsu && !e_is_uncached && !e_is_cmo && !e_exception
+  val e_cache_lookup = io.e.canSideEffect && e_uop.info.isLsu && !e_is_uncached && !e_exception
   val e_lookup_hit = e_cache_lookup && e_raw_hit
   val e_hit = e_cache_lookup && !e_lsu_misaligned && e_raw_hit
   val e_hit_way = PriorityEncoder(e_way_hits)
@@ -579,6 +581,8 @@ class BackendLsu(implicit p: CoreParams) extends Module {
     r_is_cmo := false.B
     r_cmo_hit := false.B
     r_cmo_op := LSUOp.none
+    r_cmo_pc := 0.U
+    r_cmo_inst := 0.U
     r_cnt := 0.U
     r_wb_beat := 0.U
     r_wb_word_valid := false.B
@@ -600,6 +604,8 @@ class BackendLsu(implicit p: CoreParams) extends Module {
     r_is_cmo := true.B
     r_cmo_hit := io.w.hit
     r_cmo_op := io.w.uop.info.fuOpType
+    r_cmo_pc := io.w.uop.pc
+    r_cmo_inst := io.w.uop.inst
     r_cnt := 0.U
     r_wb_beat := 0.U
     r_wb_word_valid := false.B
@@ -717,6 +723,22 @@ class BackendLsu(implicit p: CoreParams) extends Module {
           }
         }
       }
+    }
+    when(r_is_cmo) {
+      io.slow.valid := true.B
+      io.slow.packet.pc := r_cmo_pc
+      io.slow.packet.inst := r_cmo_inst
+      io.slow.packet.instWord := Cat(0.U(32.W), r_cmo_inst)
+      io.slow.packet.jump := true.B
+      io.slow.packet.target := (r_cmo_pc + 4.U)(p.addrBits - 1, 0)
+      io.slow.rfWen := false.B
+      io.slow.rd := 0.U
+      io.slow.rfData := 0.U
+      io.slow.isLoad := false.B
+      io.slow.isStore := false.B
+      io.slow.releaseVslot := false.B
+      io.slow.releaseSlot := 0.U
+      io.slow.exit := false.B
     }
     r_state := DCacheRefillState.idle
   }
