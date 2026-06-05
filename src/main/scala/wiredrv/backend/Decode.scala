@@ -42,6 +42,7 @@ class DecodedInst(implicit p: CoreParams) extends Bundle {
 class Decode(implicit p: CoreParams) extends Module {
   val io = IO(new Bundle {
     val inst = Input(UInt(32.W))
+    val instWord = Input(UInt(64.W))
     val out = Output(new DecodedInst)
   })
 
@@ -49,36 +50,57 @@ class Decode(implicit p: CoreParams) extends Module {
     Cat(Fill(p.xlen - fromBits, value(fromBits - 1)), value(fromBits - 1, 0))
 
   val inst = io.inst
+  val instWord = io.instWord
   val decodeBits = ListLookup(inst, RV64IDecodeTable.decodeDefault, RV64IDecodeTable.table)
   val isTensor32 = inst(6, 0) === "b0001011".U
   val isTensor64 = inst(6, 0) === "b0111111".U
   val isTensor = decodeBits(2) === FuType.tensor
   val tensorFunct3 = inst(14, 12)
-  val isTcsrAccess = isTensor32 && inst(31, 27) === 0.U
-  val isSbAccess = isTensor32 && inst(31, 27) === 1.U
-  val isControlAccess = isTcsrAccess || isSbAccess
-  val isTcsrRead = isTcsrAccess && tensorFunct3 === "b100".U
-  val isSbRead = isSbAccess && (tensorFunct3 === "b100".U || tensorFunct3 === "b101".U)
-  val isRespRead = isTcsrRead || isSbRead
-  val isTcsrWrite = isTcsrAccess && tensorFunct3 === "b000".U
-  val isSbWrite = isSbAccess && tensorFunct3 === "b000".U
-  val isControlWrite = isTcsrWrite || isSbWrite
-  val isAsyncTensor = isTensor64 || (isTensor32 && !isControlAccess)
+  val tensor64Func = instWord(63, 56)
+  val tensor64Sub = instWord(55, 52)
+  val tensorRd = inst(11, 7)
+  val isTcsrAccess32 = isTensor32 && inst(31, 27) === 0.U
+  val isSbAccess32 = isTensor32 && inst(31, 27) === 1.U
+  val isControlAccess32 = isTcsrAccess32 || isSbAccess32
+  val isTcsrRead32 = isTcsrAccess32 && tensorFunct3 === "b100".U
+  val isSbRead32 = isSbAccess32 && (tensorFunct3 === "b100".U || tensorFunct3 === "b101".U)
+  val isRespRead32 = isTcsrRead32 || isSbRead32
+  val isTcsrWrite32 = isTcsrAccess32 && tensorFunct3 === "b000".U
+  val isSbWrite32 = isSbAccess32 && tensorFunct3 === "b000".U
+  val isControlWrite32 = isTcsrWrite32 || isSbWrite32
+  val isTcsrAccess64 = isTensor64 && tensor64Func === "h80".U
+  val isTcsrMask64 = isTensor64 && tensor64Func === "h81".U
+  val isTcsrXchg64 = isTcsrAccess64 && tensorRd =/= 0.U
+  val isSbProduce64 = isTensor64 && tensor64Func === "hff".U && tensor64Sub === 0.U
+  val isSbBar64 = isTensor64 && tensor64Func === "hff".U && tensor64Sub === 1.U
+  val isControlAccess64 = isTcsrAccess64 || isTcsrMask64 || isSbProduce64 || isSbBar64
+  val isRespRead64 = isTcsrXchg64 || isTcsrMask64
+  val isAsyncTensor = (isTensor32 && !isControlAccess32) || (isTensor64 && !isControlAccess64)
+  val useTensor64Rs3AsSrc2 = isTcsrMask64 || isSbProduce64
 
   val info = WireInit(0.U.asTypeOf(new DecodeInfo))
-  info.src1Type := Mux(isControlAccess, SrcType.none, decodeBits(0))
-  info.src2Type := Mux(isControlAccess, SrcType.none, decodeBits(1))
+  info.src1Type := MuxCase(decodeBits(0), Seq(
+    isControlAccess32 -> SrcType.none,
+    (isTcsrAccess64 || isTcsrMask64) -> SrcType.reg,
+    (isSbProduce64 || isSbBar64) -> SrcType.none
+  ))
+  info.src2Type := MuxCase(decodeBits(1), Seq(
+    isControlAccess32 -> SrcType.none,
+    isTcsrAccess64 -> SrcType.none,
+    (isTcsrMask64 || isSbProduce64) -> SrcType.reg,
+    isSbBar64 -> SrcType.none
+  ))
   info.fuType := decodeBits(2)
   info.fuOpType := decodeBits(3)
-  info.rwen := Mux(isTensor, isRespRead, decodeBits(4)(0))
+  info.rwen := Mux(isTensor, isRespRead32 || isRespRead64, decodeBits(4)(0))
   info.selImm := decodeBits(5)
   info.flushPipe := decodeBits(6)(0)
   info.illegal := decodeBits(7)(0)
   info.rs1en := info.src1Type === SrcType.reg
   info.rs2en := info.src2Type === SrcType.reg
   info.rden := info.rwen
-  info.rdAsSrc := isTensor && (isControlWrite || isAsyncTensor)
-  info.tensorExpectsResp := isTensor && isRespRead
+  info.rdAsSrc := isTensor && (isControlWrite32 || isAsyncTensor)
+  info.tensorExpectsResp := isTensor && (isRespRead32 || isRespRead64)
   info.isRVT32 := isTensor32
   info.isRVT64 := isTensor64
   info.isLsu := decodeBits(2) === FuType.lsu
@@ -111,7 +133,7 @@ class Decode(implicit p: CoreParams) extends Module {
   io.out.inst := inst
   io.out.info := info
   io.out.rs1 := inst(19, 15)
-  io.out.rs2 := inst(24, 20)
+  io.out.rs2 := Mux(useTensor64Rs3AsSrc2, inst(31, 27), inst(24, 20))
   io.out.rd := inst(11, 7)
   io.out.imm := imm
   io.out.csrAddr := inst(31, 20)

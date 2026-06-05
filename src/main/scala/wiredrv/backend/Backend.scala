@@ -254,6 +254,7 @@ class Backend(implicit p: CoreParams) extends Module {
   vAllocator.io.release(1).bits := v_release_slot
 
   decoder.io.inst := io.inst.bits.inst
+  decoder.io.instWord := io.inst.bits.instWord
   alu.io.src1 := 0.U
   alu.io.src2 := 0.U
   alu.io.op := AluOp.add

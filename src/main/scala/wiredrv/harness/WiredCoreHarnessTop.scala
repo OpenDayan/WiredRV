@@ -474,12 +474,20 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   val tensorVecSbBarInst = "h000000000a00538b".U(64.W)
   val tensorLsuSbBarInst = "h000000000c00538b".U(64.W)
   val tensorSbGetAnyInst = "h000000000e00438b".U(64.W)
+  val tensor64TcsrWriteInst = "h800000000002803f".U(64.W)
+  val tensor64TcsrXchgInst = "h80000000000283bf".U(64.W)
+  val tensor64TcsrMaskInst = "h81000000300283bf".U(64.W)
+  val tensor64SbProduceInst = "hff0000003800003f".U(64.W)
+  val tensor64SbBarInst = "hff100000280002bf".U(64.W)
   val tensor32Rs1Data = "h0123456789abcdef".U(64.W)
   val tensor32Rs2Data = "hfedcba9876543210".U(64.W)
   val tensor32RdData = "h0badc0ffee0ddf00".U(64.W)
   val tensor64Rs1Data = "h13579bdf2468ace0".U(64.W)
   val tensor64Rs2Data = "hf0e1d2c3b4a59687".U(64.W)
   val tensor64RdData = "hdeadbeefcafebabe".U(64.W)
+  val tensor64ControlRs1Data = "h13579bdf2468ace0".U(64.W)
+  val tensor64ControlRs3Data = "h0f1e2d3c4b5a6978".U(64.W)
+  val tensor64SbProduceData = "h0feedface1234567".U(64.W)
   val tensorControlRdData = "h0feedface1234567".U(64.W)
   val tensorMatTcsrReadData = "h1111222233334444".U(64.W)
   val tensorVecTcsrReadData = "h5555666677778888".U(64.W)
@@ -488,6 +496,8 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   val tensorVecSbBarData = "h1122334455667788".U(64.W)
   val tensorLsuSbBarData = "h8877665544332211".U(64.W)
   val tensorSbGetAnyData = "h0f0e0d0c0b0a0908".U(64.W)
+  val tensor64TcsrXchgData = "h2468ace013579bdf".U(64.W)
+  val tensor64TcsrMaskData = "h0a0b0c0d0e0f1011".U(64.W)
   val tensor32Issue = core.io.tensorInst.bits.instWord === tensor32IssueInst
   val tensor64Issue = core.io.tensorInst.bits.instWord === tensor64IssueInst
   val tensorMatTcsrWriteIssue = core.io.tensorInst.bits.instWord === tensorMatTcsrWriteInst
@@ -503,8 +513,14 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   val tensorVecSbBarIssue = core.io.tensorInst.bits.instWord === tensorVecSbBarInst
   val tensorLsuSbBarIssue = core.io.tensorInst.bits.instWord === tensorLsuSbBarInst
   val tensorSbGetAnyIssue = core.io.tensorInst.bits.instWord === tensorSbGetAnyInst
+  val tensor64TcsrWriteIssue = core.io.tensorInst.bits.instWord === tensor64TcsrWriteInst
+  val tensor64TcsrXchgIssue = core.io.tensorInst.bits.instWord === tensor64TcsrXchgInst
+  val tensor64TcsrMaskIssue = core.io.tensorInst.bits.instWord === tensor64TcsrMaskInst
+  val tensor64SbProduceIssue = core.io.tensorInst.bits.instWord === tensor64SbProduceInst
+  val tensor64SbBarIssue = core.io.tensorInst.bits.instWord === tensor64SbBarInst
   val tensorTcsrReadIssue =
-    tensorMatTcsrReadIssue || tensorVecTcsrReadIssue || tensorLsuTcsrReadIssue
+    tensorMatTcsrReadIssue || tensorVecTcsrReadIssue || tensorLsuTcsrReadIssue ||
+      tensor64TcsrXchgIssue || tensor64TcsrMaskIssue
   val tensorSbReadIssue =
     tensorMatSbBarIssue || tensorVecSbBarIssue || tensorLsuSbBarIssue || tensorSbGetAnyIssue
   val tensorControlWriteIssue =
@@ -517,7 +533,9 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
     tensorMatSbBarIssue -> tensorMatSbBarData,
     tensorVecSbBarIssue -> tensorVecSbBarData,
     tensorLsuSbBarIssue -> tensorLsuSbBarData,
-    tensorSbGetAnyIssue -> tensorSbGetAnyData
+    tensorSbGetAnyIssue -> tensorSbGetAnyData,
+    tensor64TcsrXchgIssue -> tensor64TcsrXchgData,
+    tensor64TcsrMaskIssue -> tensor64TcsrMaskData
   ))
   core.io.tensorInst.ready := !core.io.tensorInst.bits.expectsResp || tensorRespStub.io.enq.ready
   tensorRespStub.io.enq.valid := core.io.tensorInst.fire && core.io.tensorInst.bits.expectsResp
@@ -558,6 +576,36 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
       "Tensor control write unexpectedly requested a response")
     assert(core.io.tensorInst.bits.rdData === tensorControlRdData,
       "Tensor control write rdData mismatch")
+  }
+  when(core.io.tensorInst.fire && tensor64TcsrWriteIssue) {
+    assert(!core.io.tensorInst.bits.expectsResp,
+      "Tensor 64-bit TCSR write unexpectedly requested a response")
+    assert(core.io.tensorInst.bits.rs1Data === tensor64ControlRs1Data,
+      "Tensor 64-bit TCSR write rs1Data mismatch")
+  }
+  when(core.io.tensorInst.fire && tensor64TcsrXchgIssue) {
+    assert(core.io.tensorInst.bits.expectsResp,
+      "Tensor 64-bit TCSR xchg did not request a response")
+    assert(core.io.tensorInst.bits.rs1Data === tensor64ControlRs1Data,
+      "Tensor 64-bit TCSR xchg rs1Data mismatch")
+  }
+  when(core.io.tensorInst.fire && tensor64TcsrMaskIssue) {
+    assert(core.io.tensorInst.bits.expectsResp,
+      "Tensor 64-bit TCSR masked xchg did not request a response")
+    assert(core.io.tensorInst.bits.rs1Data === tensor64ControlRs1Data,
+      "Tensor 64-bit TCSR masked xchg rs1Data mismatch")
+    assert(core.io.tensorInst.bits.rs2Data === tensor64ControlRs3Data,
+      "Tensor 64-bit TCSR masked xchg rs3Data mismatch")
+  }
+  when(core.io.tensorInst.fire && tensor64SbProduceIssue) {
+    assert(!core.io.tensorInst.bits.expectsResp,
+      "Tensor 64-bit scoreboard produce unexpectedly requested a response")
+    assert(core.io.tensorInst.bits.rs2Data === tensor64SbProduceData,
+      "Tensor 64-bit scoreboard produce rs3Data mismatch")
+  }
+  when(core.io.tensorInst.fire && tensor64SbBarIssue) {
+    assert(!core.io.tensorInst.bits.expectsResp,
+      "Tensor 64-bit scoreboard barrier unexpectedly requested a response")
   }
   core.io.tensorResp <> tensorRespStub.io.deq
   mem.io.axi <> core.io.mem
