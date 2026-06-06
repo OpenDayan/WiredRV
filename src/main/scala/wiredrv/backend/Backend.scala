@@ -148,6 +148,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val div_wb_pending_valid = RegInit(false.B)
   val div_wb_pending = RegInit(0.U.asTypeOf(new MduWriteback))
   val tensorAwaitResp = RegInit(false.B)
+  val tensorAwaitBlocksPipe = RegInit(false.B)
   val tensorRespRd = RegInit(0.U(5.W))
   val tensorHasVslot = RegInit(false.B)
   val tensorVslot = RegInit(0.U(p.longLatencySlotsBits.W))
@@ -361,6 +362,9 @@ class Backend(implicit p: CoreParams) extends Module {
   val w_is_div_pipe = w_valid && !w_uop.flushed && w_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(w_uop.info.fuOpType)
   val e_is_tensor_pipe = e_valid && !e_uop.flushed && !e_killed_by_w && e_uop.info.fuType === FuType.tensor
   val w_is_tensor_pipe = w_valid && !w_uop.flushed && w_uop.info.fuType === FuType.tensor
+  val e_tensor_blocks_pipe = e_is_tensor_pipe && e_uop.info.tensorBlocksPipe
+  val w_tensor_blocks_pipe = w_is_tensor_pipe && w_uop.info.tensorBlocksPipe
+  val d_tensor_bar_stall = tensorAwaitBlocksPipe || e_tensor_blocks_pipe || w_tensor_blocks_pipe
   val e_result_forwardable_to_w =
     e_valid && !e_uop.flushed && !e_killed_by_w &&
       !e_uop.vslot_valid && e_uop.info.rwen && nonZeroReg(e_uop.rd) &&
@@ -427,7 +431,8 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_lsu_cache_stall = d_cache_busy || d_uncached_busy || d_store_queue_wait
   val d_ordering_stall = d_fence_wait || d_misaligned_wait || d_nemu_trap_wait
   val d_stall =
-    d_data_hazard_stall || d_long_latency_stall || d_lsu_cache_stall || d_ordering_stall
+    d_data_hazard_stall || d_long_latency_stall || d_lsu_cache_stall || d_ordering_stall ||
+      d_tensor_bar_stall
 
   io.inst.ready := !d_stall
   val d_fire = io.inst.valid && io.inst.ready
@@ -775,6 +780,7 @@ class Backend(implicit p: CoreParams) extends Module {
   when(w_tensor_issue && w_uop.info.tensorExpectsResp) {
     assert(!tensorAwaitResp, "Tensor response request issued while another response is pending")
     tensorAwaitResp := true.B
+    tensorAwaitBlocksPipe := w_uop.info.tensorBlocksPipe
     tensorRespRd := w_uop.rd
     tensorHasVslot := w_uop.vslot_valid && nonZeroReg(w_uop.rd)
     tensorVslot := w_uop.vslot
@@ -783,6 +789,7 @@ class Backend(implicit p: CoreParams) extends Module {
     assert(io.tensorResp.bits.rd === tensorRespRd,
       "Tensor response rd did not match the outstanding Tensor request")
     tensorAwaitResp := false.B
+    tensorAwaitBlocksPipe := false.B
     tensorHasVslot := false.B
   }
 

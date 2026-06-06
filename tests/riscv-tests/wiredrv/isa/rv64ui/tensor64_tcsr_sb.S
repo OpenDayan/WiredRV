@@ -57,18 +57,6 @@ RVTEST_CODE_BEGIN
   li t4, 0x0feedface1234567
   bne t2, t4, fail
 
-  li TESTNUM, 5
-
-  li t0, 0x13579bdf2468ace0
-  // __tx_sb_bar(): func=0xff, sub=1. The old builder follows it with
-  // andi t0, t0, 0 to clear the temporary register it encoded as rd/rs3.
-  .align 3
-  .word 0x280002bf
-  .word 0xff100000
-  andi t0, t0, 0
-
-  bne t0, zero, fail
-
 pass:
   RVTEST_PASS
 

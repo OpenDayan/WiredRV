@@ -15,6 +15,7 @@ class DecodeInfo extends Bundle {
   val rwen = Bool()
   val rdAsSrc = Bool()
   val tensorExpectsResp = Bool()
+  val tensorBlocksPipe = Bool()
   val isRVT64 = Bool()
   val isRVT32 = Bool()
   val selImm = UInt(ImmSel.width.W)
@@ -61,10 +62,12 @@ class Decode(implicit p: CoreParams) extends Module {
   val tensorRd = inst(11, 7)
   val isTcsrAccess32 = isTensor32 && inst(31, 27) === 0.U
   val isSbAccess32 = isTensor32 && inst(31, 27) === 1.U
+  val isSbBar32Raw = isSbAccess32 && inst(24, 15) === 0.U && tensorFunct3 === "b101".U
+  val isSbBar32 = isSbBar32Raw && inst(26, 25) =/= "b11".U
   val isControlAccess32 = isTcsrAccess32 || isSbAccess32
   val isTcsrRead32 = isTcsrAccess32 && tensorFunct3 === "b100".U
-  val isSbRead32 = isSbAccess32 && (tensorFunct3 === "b100".U || tensorFunct3 === "b101".U)
-  val isRespRead32 = isTcsrRead32 || isSbRead32
+  val isSbRead32 = isSbAccess32 && tensorFunct3 === "b100".U
+  val isRespRead32 = isTcsrRead32 || isSbRead32 || isSbBar32
   val isTcsrWrite32 = isTcsrAccess32 && tensorFunct3 === "b000".U
   val isSbWrite32 = isSbAccess32 && tensorFunct3 === "b000".U
   val isControlWrite32 = isTcsrWrite32 || isSbWrite32
@@ -73,7 +76,7 @@ class Decode(implicit p: CoreParams) extends Module {
   val isTcsrXchg64 = isTcsrAccess64 && tensorRd =/= 0.U
   val isSbProduce64 = isTensor64 && tensor64Func === "hff".U && tensor64Sub === 0.U
   val isSbBar64 = isTensor64 && tensor64Func === "hff".U && tensor64Sub === 1.U
-  val isControlAccess64 = isTcsrAccess64 || isTcsrMask64 || isSbProduce64 || isSbBar64
+  val isControlAccess64 = isTcsrAccess64 || isTcsrMask64 || isSbProduce64
   val isRespRead64 = isTcsrXchg64 || isTcsrMask64
   val isAsyncTensor = (isTensor32 && !isControlAccess32) || (isTensor64 && !isControlAccess64)
   val useTensor64Rs3AsSrc2 = isTcsrMask64 || isSbProduce64
@@ -95,12 +98,13 @@ class Decode(implicit p: CoreParams) extends Module {
   info.rwen := Mux(isTensor, isRespRead32 || isRespRead64, decodeBits(4)(0))
   info.selImm := decodeBits(5)
   info.flushPipe := decodeBits(6)(0)
-  info.illegal := decodeBits(7)(0)
+  info.illegal := decodeBits(7)(0) || isSbBar64 || (isSbBar32Raw && !isSbBar32)
   info.rs1en := info.src1Type === SrcType.reg
   info.rs2en := info.src2Type === SrcType.reg
   info.rden := info.rwen
-  info.rdAsSrc := isTensor && (isControlWrite32 || isAsyncTensor)
+  info.rdAsSrc := isTensor && (isControlWrite32 || isSbBar32 || isAsyncTensor)
   info.tensorExpectsResp := isTensor && (isRespRead32 || isRespRead64)
+  info.tensorBlocksPipe := isTensor && isSbBar32
   info.isRVT32 := isTensor32
   info.isRVT64 := isTensor64
   info.isLsu := decodeBits(2) === FuType.lsu

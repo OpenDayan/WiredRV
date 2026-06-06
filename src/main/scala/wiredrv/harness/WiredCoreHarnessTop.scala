@@ -518,6 +518,7 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   val tensor64TcsrMaskIssue = core.io.tensorInst.bits.instWord === tensor64TcsrMaskInst
   val tensor64SbProduceIssue = core.io.tensorInst.bits.instWord === tensor64SbProduceInst
   val tensor64SbBarIssue = core.io.tensorInst.bits.instWord === tensor64SbBarInst
+  val tensorSbBarIssue = tensorMatSbBarIssue || tensorVecSbBarIssue || tensorLsuSbBarIssue
   val tensorTcsrReadIssue =
     tensorMatTcsrReadIssue || tensorVecTcsrReadIssue || tensorLsuTcsrReadIssue ||
       tensor64TcsrXchgIssue || tensor64TcsrMaskIssue
@@ -530,17 +531,35 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
     tensorMatTcsrReadIssue -> tensorMatTcsrReadData,
     tensorVecTcsrReadIssue -> tensorVecTcsrReadData,
     tensorLsuTcsrReadIssue -> tensorLsuTcsrReadData,
-    tensorMatSbBarIssue -> tensorMatSbBarData,
-    tensorVecSbBarIssue -> tensorVecSbBarData,
-    tensorLsuSbBarIssue -> tensorLsuSbBarData,
+    tensorSbBarIssue -> core.io.tensorInst.bits.rdData,
     tensorSbGetAnyIssue -> tensorSbGetAnyData,
     tensor64TcsrXchgIssue -> tensor64TcsrXchgData,
     tensor64TcsrMaskIssue -> tensor64TcsrMaskData
   ))
-  core.io.tensorInst.ready := !core.io.tensorInst.bits.expectsResp || tensorRespStub.io.enq.ready
-  tensorRespStub.io.enq.valid := core.io.tensorInst.fire && core.io.tensorInst.bits.expectsResp
-  tensorRespStub.io.enq.bits.data := tensorRespData
-  tensorRespStub.io.enq.bits.rd := core.io.tensorInst.bits.instWord(11, 7)
+  val tensorRespDelayValid = RegInit(false.B)
+  val tensorRespDelayCount = RegInit(0.U(2.W))
+  val tensorRespDelayBits = RegInit(0.U.asTypeOf(new TensorResp))
+  val tensorRespImmediate = core.io.tensorInst.fire && core.io.tensorInst.bits.expectsResp && !tensorSbBarIssue
+  val tensorRespDelayStart = core.io.tensorInst.fire && core.io.tensorInst.bits.expectsResp && tensorSbBarIssue
+  val tensorRespDelayReady = tensorRespDelayValid && tensorRespDelayCount === 0.U
+  val tensorRespDelayEnq = tensorRespDelayReady && tensorRespStub.io.enq.ready
+  core.io.tensorInst.ready := !core.io.tensorInst.bits.expectsResp ||
+    (!tensorRespDelayValid && tensorRespStub.io.enq.ready)
+  tensorRespStub.io.enq.valid := tensorRespImmediate || tensorRespDelayReady
+  val tensorRespNowBits = Wire(new TensorResp)
+  tensorRespNowBits.data := tensorRespData
+  tensorRespNowBits.rd := core.io.tensorInst.bits.instWord(11, 7)
+  tensorRespStub.io.enq.bits := Mux(tensorRespDelayValid, tensorRespDelayBits, tensorRespNowBits)
+  when(tensorRespDelayStart) {
+    tensorRespDelayValid := true.B
+    tensorRespDelayCount := 2.U
+    tensorRespDelayBits.data := tensorRespData
+    tensorRespDelayBits.rd := core.io.tensorInst.bits.instWord(11, 7)
+  }.elsewhen(tensorRespDelayValid && tensorRespDelayCount =/= 0.U) {
+    tensorRespDelayCount := tensorRespDelayCount - 1.U
+  }.elsewhen(tensorRespDelayEnq) {
+    tensorRespDelayValid := false.B
+  }
   when(core.io.tensorInst.fire && tensor32Issue) {
     assert(!core.io.tensorInst.bits.expectsResp,
       "Tensor 32-bit async issue unexpectedly requested a response")
@@ -611,6 +630,9 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   mem.io.axi <> core.io.mem
 
   val commitValid = core.io.diffCommitValid
+  when(tensorRespDelayValid && !tensorRespDelayEnq) {
+    assert(!commitValid, "Core committed after blocking Tensor scoreboard barrier before completion")
+  }
   val simExit = core.io.diffExit
   val simExitDelayed = RegInit(false.B)
   when(simExit) {

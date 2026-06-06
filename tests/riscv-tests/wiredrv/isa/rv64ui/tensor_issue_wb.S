@@ -22,9 +22,9 @@ RVTEST_CODE_BEGIN
 
   li TESTNUM, 3
 
-  li t2, 0
+  li t2, 0x1020304050607080
 
-  // tx_mat_sb_bar(t2): scoreboard read/barrier also writes back via tensorResp.
+  // tx_mat_sb_bar(t2): barrier completion writes back the original gpr[rd] value.
   .word 0x0800538b
 
   li t4, 0x1020304050607080

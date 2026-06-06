@@ -96,8 +96,8 @@ RVTEST_CODE_BEGIN
 
   li TESTNUM, 10
 
-  li t2, 0
-  // tx_mat_sb_bar(t2)
+  li t2, 0x1020304050607080
+  // tx_mat_sb_bar(t2): writes the original gpr[rd] value back after completion.
   .word 0x0800538b
 
   li t4, 0x1020304050607080
@@ -108,8 +108,8 @@ RVTEST_CODE_BEGIN
 
   li TESTNUM, 11
 
-  li t2, 0
-  // tx_vec_sb_bar(t2)
+  li t2, 0x1122334455667788
+  // tx_vec_sb_bar(t2): writes the original gpr[rd] value back after completion.
   .word 0x0a00538b
 
   li t4, 0x1122334455667788
@@ -120,8 +120,8 @@ RVTEST_CODE_BEGIN
 
   li TESTNUM, 12
 
-  li t2, 0
-  // tx_lsu_sb_bar(t2)
+  li t2, 0x8877665544332211
+  // tx_lsu_sb_bar(t2): writes the original gpr[rd] value back after completion.
   .word 0x0c00538b
 
   li t4, 0x8877665544332211
