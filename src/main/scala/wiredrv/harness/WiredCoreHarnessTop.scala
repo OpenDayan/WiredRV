@@ -498,21 +498,33 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   val tensorSbGetAnyData = "h0f0e0d0c0b0a0908".U(64.W)
   val tensor64TcsrXchgData = "h2468ace013579bdf".U(64.W)
   val tensor64TcsrMaskData = "h0a0b0c0d0e0f1011".U(64.W)
+  val tensorInst32 = core.io.tensorInst.bits.instWord(31, 0)
+  val tensorOpcode32 = tensorInst32(6, 0) === "b0001011".U
+  val tensorFunct3 = tensorInst32(14, 12)
+  val tensorUnit = tensorInst32(26, 25)
+  val tensorMajor = tensorInst32(31, 27)
+  val tensorMid = tensorInst32(24, 15)
+  val tensorTcsrAccess32 = tensorOpcode32 && tensorMajor === 0.U
+  val tensorSbAccess32 = tensorOpcode32 && tensorMajor === 1.U
   val tensor32Issue = core.io.tensorInst.bits.instWord === tensor32IssueInst
   val tensor64Issue = core.io.tensorInst.bits.instWord === tensor64IssueInst
   val tensorMatTcsrWriteIssue = core.io.tensorInst.bits.instWord === tensorMatTcsrWriteInst
   val tensorVecTcsrWriteIssue = core.io.tensorInst.bits.instWord === tensorVecTcsrWriteInst
   val tensorLsuTcsrWriteIssue = core.io.tensorInst.bits.instWord === tensorLsuTcsrWriteInst
-  val tensorMatTcsrReadIssue = core.io.tensorInst.bits.instWord === tensorMatTcsrReadInst
-  val tensorVecTcsrReadIssue = core.io.tensorInst.bits.instWord === tensorVecTcsrReadInst
-  val tensorLsuTcsrReadIssue = core.io.tensorInst.bits.instWord === tensorLsuTcsrReadInst
+  val tensorMatTcsrReadIssue = tensorTcsrAccess32 && tensorUnit === "b00".U && tensorFunct3 === "b100".U
+  val tensorVecTcsrReadIssue = tensorTcsrAccess32 && tensorUnit === "b01".U && tensorFunct3 === "b100".U
+  val tensorLsuTcsrReadIssue = tensorTcsrAccess32 && tensorUnit === "b10".U && tensorFunct3 === "b100".U
   val tensorMatSbProduceIssue = core.io.tensorInst.bits.instWord === tensorMatSbProduceInst
   val tensorVecSbProduceIssue = core.io.tensorInst.bits.instWord === tensorVecSbProduceInst
   val tensorLsuSbProduceIssue = core.io.tensorInst.bits.instWord === tensorLsuSbProduceInst
-  val tensorMatSbBarIssue = core.io.tensorInst.bits.instWord === tensorMatSbBarInst
-  val tensorVecSbBarIssue = core.io.tensorInst.bits.instWord === tensorVecSbBarInst
-  val tensorLsuSbBarIssue = core.io.tensorInst.bits.instWord === tensorLsuSbBarInst
-  val tensorSbGetAnyIssue = core.io.tensorInst.bits.instWord === tensorSbGetAnyInst
+  val tensorMatSbBarIssue =
+    tensorSbAccess32 && tensorUnit === "b00".U && tensorMid === 0.U && tensorFunct3 === "b101".U
+  val tensorVecSbBarIssue =
+    tensorSbAccess32 && tensorUnit === "b01".U && tensorMid === 0.U && tensorFunct3 === "b101".U
+  val tensorLsuSbBarIssue =
+    tensorSbAccess32 && tensorUnit === "b10".U && tensorMid === 0.U && tensorFunct3 === "b101".U
+  val tensorSbGetAnyIssue =
+    tensorSbAccess32 && tensorUnit === "b11".U && tensorMid === 0.U && tensorFunct3 === "b100".U
   val tensor64TcsrWriteIssue = core.io.tensorInst.bits.instWord === tensor64TcsrWriteInst
   val tensor64TcsrXchgIssue = core.io.tensorInst.bits.instWord === tensor64TcsrXchgInst
   val tensor64TcsrMaskIssue = core.io.tensorInst.bits.instWord === tensor64TcsrMaskInst
@@ -536,7 +548,6 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
     tensor64TcsrXchgIssue -> tensor64TcsrXchgData,
     tensor64TcsrMaskIssue -> tensor64TcsrMaskData
   ))
-  val tensorRespWriteback = tensorTcsrReadIssue || tensorSbReadIssue
   val tensorRespDelayValid = RegInit(false.B)
   val tensorRespDelayCount = RegInit(0.U(2.W))
   val tensorRespDelayBits = RegInit(0.U.asTypeOf(new TensorResp))
@@ -553,14 +564,12 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   val tensorRespNowBits = Wire(new TensorResp)
   tensorRespNowBits.data := tensorRespData
   tensorRespNowBits.rd := core.io.tensorInst.bits.instWord(11, 7)
-  tensorRespNowBits.writeback := tensorRespWriteback
   tensorRespStub.io.enq.bits := Mux(tensorRespDelayValid, tensorRespDelayBits, tensorRespNowBits)
   when(tensorRespDelayStart) {
     tensorRespDelayValid := true.B
     tensorRespDelayCount := 2.U
     tensorRespDelayBits.data := tensorRespData
     tensorRespDelayBits.rd := core.io.tensorInst.bits.instWord(11, 7)
-    tensorRespDelayBits.writeback := true.B
   }.elsewhen(tensorRespDelayValid && tensorRespDelayCount =/= 0.U) {
     tensorRespDelayCount := tensorRespDelayCount - 1.U
   }.elsewhen(tensorRespDelayEnq) {
@@ -639,8 +648,6 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   }
   core.io.tensorResp <> tensorRespStub.io.deq
   when(tensorBarRespQueued && tensorRespStub.io.deq.fire) {
-    assert(tensorRespStub.io.deq.bits.writeback,
-      "Tensor scoreboard barrier response did not request GPR writeback")
     assert(tensorRespStub.io.deq.bits.rd === tensorBarRespRd,
       "Tensor scoreboard barrier response rd mismatch")
     assert(tensorRespStub.io.deq.bits.data === tensorBarRespData,

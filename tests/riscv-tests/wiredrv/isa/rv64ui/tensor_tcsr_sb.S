@@ -142,6 +142,30 @@ RVTEST_CODE_BEGIN
   li t4, 0x0f0e0d0c0b0a0909
   bne t3, t4, fail
 
+  li TESTNUM, 14
+
+  // tx_mat_tcsr_read<0>(x0): rd=0 still requires TensorResp.
+  .word 0x0000400b
+
+  li t2, 0
+  // A following TensorResp instruction must not be stuck behind the x0 response.
+  .word 0x0000438b
+
+  li t4, 0x1111222233334444
+  bne t2, t4, fail
+
+  li TESTNUM, 15
+
+  // tx_sb_get_any(x0): rd=0 still requires TensorResp.
+  .word 0x0e00400b
+
+  li t2, 0
+  // A following TensorResp instruction must not be stuck behind the x0 response.
+  .word 0x0e00438b
+
+  li t4, 0x0f0e0d0c0b0a0908
+  bne t2, t4, fail
+
 pass:
   RVTEST_PASS
 
