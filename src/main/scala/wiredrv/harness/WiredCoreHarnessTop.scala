@@ -536,9 +536,13 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
     tensor64TcsrXchgIssue -> tensor64TcsrXchgData,
     tensor64TcsrMaskIssue -> tensor64TcsrMaskData
   ))
+  val tensorRespWriteback = tensorTcsrReadIssue || tensorSbReadIssue
   val tensorRespDelayValid = RegInit(false.B)
   val tensorRespDelayCount = RegInit(0.U(2.W))
   val tensorRespDelayBits = RegInit(0.U.asTypeOf(new TensorResp))
+  val tensorBarRespQueued = RegInit(false.B)
+  val tensorBarRespRd = RegInit(0.U(5.W))
+  val tensorBarRespData = RegInit(0.U(64.W))
   val tensorRespImmediate = core.io.tensorInst.fire && core.io.tensorInst.bits.expectsResp && !tensorSbBarIssue
   val tensorRespDelayStart = core.io.tensorInst.fire && core.io.tensorInst.bits.expectsResp && tensorSbBarIssue
   val tensorRespDelayReady = tensorRespDelayValid && tensorRespDelayCount === 0.U
@@ -549,16 +553,23 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
   val tensorRespNowBits = Wire(new TensorResp)
   tensorRespNowBits.data := tensorRespData
   tensorRespNowBits.rd := core.io.tensorInst.bits.instWord(11, 7)
+  tensorRespNowBits.writeback := tensorRespWriteback
   tensorRespStub.io.enq.bits := Mux(tensorRespDelayValid, tensorRespDelayBits, tensorRespNowBits)
   when(tensorRespDelayStart) {
     tensorRespDelayValid := true.B
     tensorRespDelayCount := 2.U
     tensorRespDelayBits.data := tensorRespData
     tensorRespDelayBits.rd := core.io.tensorInst.bits.instWord(11, 7)
+    tensorRespDelayBits.writeback := true.B
   }.elsewhen(tensorRespDelayValid && tensorRespDelayCount =/= 0.U) {
     tensorRespDelayCount := tensorRespDelayCount - 1.U
   }.elsewhen(tensorRespDelayEnq) {
     tensorRespDelayValid := false.B
+  }
+  when(tensorRespDelayEnq) {
+    tensorBarRespQueued := true.B
+    tensorBarRespRd := tensorRespDelayBits.rd
+    tensorBarRespData := tensorRespDelayBits.data
   }
   when(core.io.tensorInst.fire && tensor32Issue) {
     assert(!core.io.tensorInst.bits.expectsResp,
@@ -627,6 +638,26 @@ class WiredCoreHarnessTop(implicit p: CoreParams) extends Module {
       "Tensor 64-bit scoreboard barrier unexpectedly requested a response")
   }
   core.io.tensorResp <> tensorRespStub.io.deq
+  when(tensorBarRespQueued && tensorRespStub.io.deq.fire) {
+    assert(tensorRespStub.io.deq.bits.writeback,
+      "Tensor scoreboard barrier response did not request GPR writeback")
+    assert(tensorRespStub.io.deq.bits.rd === tensorBarRespRd,
+      "Tensor scoreboard barrier response rd mismatch")
+    assert(tensorRespStub.io.deq.bits.data === tensorBarRespData,
+      "Tensor scoreboard barrier response data mismatch")
+    when(tensorBarRespRd =/= 0.U) {
+      assert(core.io.diffDelayedWbValid,
+        "Tensor scoreboard barrier response did not produce delayed writeback")
+      assert(core.io.diffDelayedWbRd === tensorBarRespRd,
+        "Tensor scoreboard barrier delayed writeback rd mismatch")
+      assert(core.io.diffDelayedWbData === tensorBarRespData,
+        "Tensor scoreboard barrier delayed writeback data mismatch")
+    }.otherwise {
+      assert(!core.io.diffDelayedWbValid,
+        "Tensor scoreboard barrier x0 response produced an effective GPR writeback")
+    }
+    tensorBarRespQueued := false.B
+  }
   mem.io.axi <> core.io.mem
 
   val commitValid = core.io.diffCommitValid

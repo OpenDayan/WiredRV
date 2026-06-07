@@ -6,7 +6,7 @@ RVTEST_CODE_BEGIN
 
   li TESTNUM, 1
 
-  // tx_mat_sb_bar(x0): completion-only response, no GPR writeback.
+  // tx_mat_sb_bar(x0): writes original x0 back, with no effective GPR writeback.
   .word 0x0800500b
 
   li t0, 1
@@ -17,7 +17,7 @@ RVTEST_CODE_BEGIN
   li TESTNUM, 2
 
   li t2, 0x1020304050607080
-  // tx_mat_sb_bar(t2): writes back the original gpr[rd] value.
+  // tx_mat_sb_bar(t2): writes back the original gpr[rd] value after completion.
   .word 0x0800538b
 
   li t4, 0x1020304050607080

@@ -149,6 +149,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val div_wb_pending = RegInit(0.U.asTypeOf(new MduWriteback))
   val tensorAwaitResp = RegInit(false.B)
   val tensorAwaitBlocksPipe = RegInit(false.B)
+  val tensorRespWrites = RegInit(false.B)
   val tensorRespRd = RegInit(0.U(5.W))
   val tensorHasVslot = RegInit(false.B)
   val tensorVslot = RegInit(0.U(p.longLatencySlotsBits.W))
@@ -355,9 +356,9 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_cache_access = d_cache_lookup && !d_lsu_misaligned
   val d_is_mext_long_latency = d_dec.info.fuType === FuType.mdu
   val d_is_div = d_is_mext_long_latency && MduCalc.isDivOp(d_dec.info.fuOpType)
-  val d_is_tensor_resp = d_is_tensor && d_dec.info.tensorExpectsResp
+  val d_is_tensor_wb_resp = d_is_tensor && d_dec.info.tensorWritesResp
   val d_need_vslot_raw = d_is_uncached || d_lsu_misaligned ||
-    ((d_is_mext_long_latency || d_is_tensor_resp) && d_writes_rd)
+    ((d_is_mext_long_latency || d_is_tensor_wb_resp) && d_writes_rd)
   val e_is_div = e_valid && !e_uop.flushed && e_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(e_uop.info.fuOpType)
   val w_is_div_pipe = w_valid && !w_uop.flushed && w_uop.info.fuType === FuType.mdu && MduCalc.isDivOp(w_uop.info.fuOpType)
   val e_is_tensor_pipe = e_valid && !e_uop.flushed && !e_killed_by_w && e_uop.info.fuType === FuType.tensor
@@ -735,8 +736,8 @@ class Backend(implicit p: CoreParams) extends Module {
 
   tensorRespReady := tensorAwaitResp && !long_wb_valid && !w_release_vslot &&
     !lsu.io.uncachedBusy && !lsu.io.misalignedBusy
-  val tensor_wb_valid = tensorRespFire && nonZeroReg(io.tensorResp.bits.rd)
-  val tensor_release_vslot = tensorRespFire && tensorHasVslot
+  val tensor_wb_valid = tensorRespFire && io.tensorResp.bits.writeback && nonZeroReg(io.tensorResp.bits.rd)
+  val tensor_release_vslot = tensorRespFire && io.tensorResp.bits.writeback && tensorHasVslot
 
   v_release_vslot := long_wb_valid || tensor_release_vslot || w_release_vslot
   v_release_slot := Mux(
@@ -781,15 +782,19 @@ class Backend(implicit p: CoreParams) extends Module {
     assert(!tensorAwaitResp, "Tensor response request issued while another response is pending")
     tensorAwaitResp := true.B
     tensorAwaitBlocksPipe := w_uop.info.tensorBlocksPipe
+    tensorRespWrites := w_uop.info.tensorWritesResp
     tensorRespRd := w_uop.rd
-    tensorHasVslot := w_uop.vslot_valid && nonZeroReg(w_uop.rd)
+    tensorHasVslot := w_uop.info.tensorWritesResp && w_uop.vslot_valid && nonZeroReg(w_uop.rd)
     tensorVslot := w_uop.vslot
   }
   when(tensorRespFire) {
-    assert(io.tensorResp.bits.rd === tensorRespRd,
+    assert(io.tensorResp.bits.writeback === tensorRespWrites,
+      "Tensor response writeback flag did not match the outstanding Tensor request")
+    assert(!io.tensorResp.bits.writeback || io.tensorResp.bits.rd === tensorRespRd,
       "Tensor response rd did not match the outstanding Tensor request")
     tensorAwaitResp := false.B
     tensorAwaitBlocksPipe := false.B
+    tensorRespWrites := false.B
     tensorHasVslot := false.B
   }
 

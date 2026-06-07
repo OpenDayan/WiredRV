@@ -15,6 +15,7 @@ class DecodeInfo extends Bundle {
   val rwen = Bool()
   val rdAsSrc = Bool()
   val tensorExpectsResp = Bool()
+  val tensorWritesResp = Bool()
   val tensorBlocksPipe = Bool()
   val isRVT64 = Bool()
   val isRVT32 = Bool()
@@ -67,7 +68,9 @@ class Decode(implicit p: CoreParams) extends Module {
   val isControlAccess32 = isTcsrAccess32 || isSbAccess32
   val isTcsrRead32 = isTcsrAccess32 && tensorFunct3 === "b100".U
   val isSbRead32 = isSbAccess32 && tensorFunct3 === "b100".U
-  val isRespRead32 = isTcsrRead32 || isSbRead32 || isSbBar32
+  val isRespRead32 = isTcsrRead32 || isSbRead32
+  val isCompletionResp32 = isRespRead32 || isSbBar32
+  val isRespWrite32 = isRespRead32 || isSbBar32
   val isTcsrWrite32 = isTcsrAccess32 && tensorFunct3 === "b000".U
   val isSbWrite32 = isSbAccess32 && tensorFunct3 === "b000".U
   val isControlWrite32 = isTcsrWrite32 || isSbWrite32
@@ -78,6 +81,7 @@ class Decode(implicit p: CoreParams) extends Module {
   val isSbBar64 = isTensor64 && tensor64Func === "hff".U && tensor64Sub === 1.U
   val isControlAccess64 = isTcsrAccess64 || isTcsrMask64 || isSbProduce64
   val isRespRead64 = isTcsrXchg64 || isTcsrMask64
+  val isCompletionResp64 = isRespRead64
   val isAsyncTensor = (isTensor32 && !isControlAccess32) || (isTensor64 && !isControlAccess64)
   val useTensor64Rs3AsSrc2 = isTcsrMask64 || isSbProduce64
 
@@ -95,7 +99,7 @@ class Decode(implicit p: CoreParams) extends Module {
   ))
   info.fuType := decodeBits(2)
   info.fuOpType := decodeBits(3)
-  info.rwen := Mux(isTensor, isRespRead32 || isRespRead64, decodeBits(4)(0))
+  info.rwen := Mux(isTensor, isRespWrite32 || isRespRead64, decodeBits(4)(0))
   info.selImm := decodeBits(5)
   info.flushPipe := decodeBits(6)(0)
   info.illegal := decodeBits(7)(0) || isSbBar64 || (isSbBar32Raw && !isSbBar32)
@@ -103,7 +107,8 @@ class Decode(implicit p: CoreParams) extends Module {
   info.rs2en := info.src2Type === SrcType.reg
   info.rden := info.rwen
   info.rdAsSrc := isTensor && (isControlWrite32 || isSbBar32 || isAsyncTensor)
-  info.tensorExpectsResp := isTensor && (isRespRead32 || isRespRead64)
+  info.tensorExpectsResp := isTensor && (isCompletionResp32 || isCompletionResp64)
+  info.tensorWritesResp := isTensor && (isRespWrite32 || isRespRead64)
   info.tensorBlocksPipe := isTensor && isSbBar32
   info.isRVT32 := isTensor32
   info.isRVT64 := isTensor64
