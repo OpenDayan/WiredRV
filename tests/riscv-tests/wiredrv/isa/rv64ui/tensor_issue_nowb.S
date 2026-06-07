@@ -31,25 +31,27 @@ RVTEST_CODE_BEGIN
 
   // Directed 64-bit async tensor issue: low half has opcode=0111111.
   // The high half is jal x0, 0 and must be treated as tensor payload data.
+  // RVT64 instructions write back through TensorResp.
   .word 0x266283bf
   .word 0x0000006f
 
-  li t4, 0xdeadbeefcafebabe
+  li t4, 0x3141592653589793
   bne t2, t4, fail
 
   li TESTNUM, 4
   addi t3, t2, 1
-  li t4, 0xdeadbeefcafebabf
+  li t4, 0x3141592653589794
   bne t3, t4, fail
 
   li TESTNUM, 5
 
-  // Back-to-back async tensor issues must not need tensorResp completion.
+  // 32-bit async tensor issue remains no-response; following RVT64 issue
+  // writes back through TensorResp.
   .word 0x0062838b
   .word 0x006283bf
   .word 0x0000006f
 
-  li t4, 0xdeadbeefcafebabe
+  li t4, 0x3141592653589793
   bne t2, t4, fail
 
 pass:

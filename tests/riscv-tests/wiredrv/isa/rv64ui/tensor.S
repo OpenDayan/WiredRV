@@ -22,16 +22,17 @@ RVTEST_CODE_BEGIN
 
   // 64-bit tensor: low half has opcode=0111111, rd=t2, rs1=t0, rs2=t1.
   // The high half is jal x0, 0; it must be treated as data, not fetched as an
-  // independent instruction. Like 32-bit async tensor, it does not write rd.
+  // independent instruction. 64-bit tensor instructions write back through
+  // TensorResp.
   .word 0x006283bf
   .word 0x0000006f
 
-  li t4, 0x33333333
+  li t4, 0x3141592653589793
   bne t2, t4, fail
 
   li TESTNUM, 3
   addi t3, t2, 5
-  li t4, 0x33333338
+  li t4, 0x3141592653589798
   bne t3, t4, fail
 
 pass:
