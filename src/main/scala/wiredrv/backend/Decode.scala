@@ -78,7 +78,7 @@ class Decode(implicit p: CoreParams) extends Module {
   val isSbProduce64 = isTensor64 && tensor64Func === "hff".U && tensor64Sub === 0.U
   val isSbBar64 = isTensor64 && tensor64Func === "hff".U && tensor64Sub === 1.U
   val isControlAccess64 = isTcsrAccess64 || isTcsrMask64 || isSbProduce64
-  val isResp64 = isTensor64 && !isSbBar64
+  val isRespRead64 = isTcsrXchg64 || isTcsrMask64
   val isAsyncTensor = (isTensor32 && !isControlAccess32) || (isTensor64 && !isControlAccess64)
   val useTensor64Rs3AsSrc2 = isTcsrMask64 || isSbProduce64
 
@@ -96,7 +96,7 @@ class Decode(implicit p: CoreParams) extends Module {
   ))
   info.fuType := decodeBits(2)
   info.fuOpType := decodeBits(3)
-  info.rwen := Mux(isTensor, isResp32 || isResp64, decodeBits(4)(0))
+  info.rwen := Mux(isTensor, isResp32 || isRespRead64, decodeBits(4)(0))
   info.selImm := decodeBits(5)
   info.flushPipe := decodeBits(6)(0)
   info.illegal := decodeBits(7)(0) || isSbBar64 || (isSbBar32Raw && !isSbBar32)
@@ -104,7 +104,7 @@ class Decode(implicit p: CoreParams) extends Module {
   info.rs2en := info.src2Type === SrcType.reg
   info.rden := info.rwen
   info.rdAsSrc := isTensor && (isControlWrite32 || isSbBar32 || isAsyncTensor)
-  info.tensorExpectsResp := isTensor && (isResp32 || isResp64)
+  info.tensorExpectsResp := isTensor && (isResp32 || isRespRead64)
   info.tensorBlocksPipe := isTensor && isSbBar32
   info.isRVT32 := isTensor32
   info.isRVT64 := isTensor64
