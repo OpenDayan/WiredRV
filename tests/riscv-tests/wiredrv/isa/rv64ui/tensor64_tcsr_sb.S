@@ -71,27 +71,28 @@ RVTEST_CODE_BEGIN
 
   li t0, 0x13579bdf2468ace0
   li t1, 0xf0e1d2c3b4a59687
-  // 64-bit async tensor with rd=x0 still requires TensorResp.
+  // Plain 64-bit async tensor with rd=x0 does not require TensorResp.
   .align 3
   .word 0x2662803f
   .word 0x0000006f
 
   li t2, 0
-  // A following 64-bit writeback response must not be stuck behind the x0 response.
+  // A following 64-bit TCSR response must not be blocked by the async issue.
   .align 3
-  .word 0x266283bf
-  .word 0x0000006f
+  .word 0x000283bf
+  .word 0x80000000
 
-  li t4, 0x3141592653589793
+  li t4, 0x2468ace013579bdf
   bne t2, t4, fail
   addi t3, t2, 1
-  li t4, 0x3141592653589794
+  li t4, 0x2468ace013579be0
   bne t3, t4, fail
 
   li TESTNUM, 6
 
   li t2, 0x0feedface1234567
-  // __tx_sb_produce(t2): func=0xff, sub=0, rs3=t2.
+  // __tx_sb_produce(t2): func=0xff, sub=0, rs3=t2. This compatibility path
+  // issues without TensorResp writeback.
   .align 3
   .word 0x3800003f
   .word 0xff000000
