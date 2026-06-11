@@ -6,6 +6,7 @@ class TensorInst extends Bundle {
   val instWord = UInt(64.W)
   val rs1Data = UInt(64.W)
   val rs2Data = UInt(64.W)
+  // RVT64: rs3Data. RVT32: rd-as-source data.
   val rdData = UInt(64.W)
   val expectsResp = Bool()
 }

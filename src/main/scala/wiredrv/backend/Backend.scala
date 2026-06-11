@@ -278,6 +278,7 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_rs1 = d_dec.rs1
   val d_rs2 = d_dec.rs2
   val d_rd = d_dec.rd
+  val d_rd_data_reg = d_dec.rdDataReg
   val e_killed_by_w = e_valid && w_redirect.valid
   val eGpr = Mux(e_valid && !e_uop.flushed && !e_uop.vslot_valid && e_uop.info.rwen && nonZeroReg(e_uop.rd), e_uop.rd, 0.U(5.W))
   val wGpr = Mux(w_rfen, w_uop.rd, 0.U(5.W))
@@ -294,10 +295,10 @@ class Backend(implicit p: CoreParams) extends Module {
 
   val d_rs1_rf = rfRead(d_rs1)
   val d_rs2_rf = rfRead(d_rs2)
-  val d_rd_rf = rfRead(d_rd)
+  val d_rd_data_rf = rfRead(d_rd_data_reg)
   val d_rs1_data = dForward(d_rs1, d_rs1_rf)
   val d_rs2_data = dForward(d_rs2, d_rs2_rf)
-  val d_rd_data = dForward(d_rd, d_rd_rf)
+  val d_rd_data = dForward(d_rd_data_reg, d_rd_data_rf)
 
   def eForward(sel: Bool, data: UInt): UInt =
     Mux(sel && w_rfen, w_rfdata, data)
@@ -381,10 +382,12 @@ class Backend(implicit p: CoreParams) extends Module {
   val d_rs1_e_haz = d_rs1_e_raw_haz && !d_lsu_base_e_forward && !(d_rs1_e_forwardable && !d_dec.info.isLsu)
   val d_rs2_e_haz = d_uses_rs2 && hitE(d_rs2) && !d_rs2_e_forwardable
   val d_rd_src_e_haz = d_is_amocas && nonZeroReg(d_rd) && hitE(d_rd)
-  val d_tensor_rd_src_e_haz = d_dec.info.rdAsSrc && nonZeroReg(d_rd) && hitE(d_rd)
+  val d_tensor_rd_data_e_haz = d_dec.info.rdDataAsSrc && nonZeroReg(d_rd_data_reg) && hitE(d_rd_data_reg)
   val d_rd_src_var_haz =
-    (d_is_amocas || d_dec.info.rdAsSrc) && nonZeroReg(d_rd) && hitVar(d_rd) && !longWbHit(d_rd)
-  val d_e_raw_haz = d_rs1_e_haz || d_rs2_e_haz || d_rd_src_e_haz || d_tensor_rd_src_e_haz
+    (d_is_amocas && nonZeroReg(d_rd) && hitVar(d_rd) && !longWbHit(d_rd)) ||
+      (d_dec.info.rdDataAsSrc && nonZeroReg(d_rd_data_reg) &&
+        hitVar(d_rd_data_reg) && !longWbHit(d_rd_data_reg))
+  val d_e_raw_haz = d_rs1_e_haz || d_rs2_e_haz || d_rd_src_e_haz || d_tensor_rd_data_e_haz
   val d_rs1_w_haz = d_uses_rs1 && nonZeroReg(d_rs1) && wGpr === d_rs1
   val d_rs2_w_haz = d_uses_rs2 && nonZeroReg(d_rs2) && wGpr === d_rs2
   val d_w_raw_haz = d_rs1_w_haz || d_rs2_w_haz

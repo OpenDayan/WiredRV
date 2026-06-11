@@ -13,7 +13,7 @@ class DecodeInfo extends Bundle {
   val rs2en = Bool()
   val rden = Bool()
   val rwen = Bool()
-  val rdAsSrc = Bool()
+  val rdDataAsSrc = Bool()
   val tensorExpectsResp = Bool()
   val tensorBlocksPipe = Bool()
   val isRVT64 = Bool()
@@ -33,6 +33,7 @@ class DecodedInst(implicit p: CoreParams) extends Bundle {
   val rs1 = UInt(5.W)
   val rs2 = UInt(5.W)
   val rd = UInt(5.W)
+  val rdDataReg = UInt(5.W)
   val imm = UInt(p.xlen.W)
   val csrAddr = UInt(12.W)
   val exceptionValid = Bool()
@@ -80,7 +81,6 @@ class Decode(implicit p: CoreParams) extends Module {
   val isControlAccess64 = isTcsrAccess64 || isTcsrMask64 || isSbProduce64
   val isRespRead64 = isTcsrXchg64 || isTcsrMask64
   val isAsyncTensor = (isTensor32 && !isControlAccess32) || (isTensor64 && !isControlAccess64)
-  val useTensor64Rs3AsSrc2 = isTcsrMask64 || isSbProduce64
 
   val info = WireInit(0.U.asTypeOf(new DecodeInfo))
   info.src1Type := MuxCase(decodeBits(0), Seq(
@@ -90,8 +90,7 @@ class Decode(implicit p: CoreParams) extends Module {
   ))
   info.src2Type := MuxCase(decodeBits(1), Seq(
     isControlAccess32 -> SrcType.none,
-    isTcsrAccess64 -> SrcType.none,
-    (isTcsrMask64 || isSbProduce64) -> SrcType.reg,
+    isControlAccess64 -> SrcType.none,
     isSbBar64 -> SrcType.none
   ))
   info.fuType := decodeBits(2)
@@ -103,7 +102,7 @@ class Decode(implicit p: CoreParams) extends Module {
   info.rs1en := info.src1Type === SrcType.reg
   info.rs2en := info.src2Type === SrcType.reg
   info.rden := info.rwen
-  info.rdAsSrc := isTensor && (isControlWrite32 || isSbBar32 || isAsyncTensor)
+  info.rdDataAsSrc := isTensor && (isControlWrite32 || isSbBar32 || isAsyncTensor || isTensor64)
   info.tensorExpectsResp := isTensor && (isResp32 || isRespRead64)
   info.tensorBlocksPipe := isTensor && isSbBar32
   info.isRVT32 := isTensor32
@@ -138,8 +137,9 @@ class Decode(implicit p: CoreParams) extends Module {
   io.out.inst := inst
   io.out.info := info
   io.out.rs1 := inst(19, 15)
-  io.out.rs2 := Mux(useTensor64Rs3AsSrc2, inst(31, 27), inst(24, 20))
+  io.out.rs2 := inst(24, 20)
   io.out.rd := inst(11, 7)
+  io.out.rdDataReg := Mux(isTensor64, inst(31, 27), inst(11, 7))
   io.out.imm := imm
   io.out.csrAddr := inst(31, 20)
   io.out.exceptionValid := exceptionValid
