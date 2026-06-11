@@ -20,7 +20,6 @@ object MduCalc {
       op === MduOp.remu || op === MduOp.divw || op === MduOp.divuw ||
       op === MduOp.remw || op === MduOp.remuw
 
-  private def twos(x: UInt): UInt = (~x).asUInt + 1.U(x.getWidth.W)
   private def sext32(x: UInt): UInt = Cat(Fill(32, x(31)), x)
 
   def mulResult(src1: UInt, src2: UInt, op: UInt): UInt = {
@@ -41,57 +40,6 @@ object MduCalc {
     ))
   }
 
-  def divResult(src1: UInt, src2: UInt, op: UInt): UInt = {
-    val src1w = src1(31, 0)
-    val src2w = src2(31, 0)
-
-    val minS64 = "h8000000000000000".U(64.W)
-    val negOne64 = "hffffffffffffffff".U(64.W)
-    val allOnes64 = "hffffffffffffffff".U(64.W)
-    val divByZero = src2 === 0.U
-    val divOverflow = src1 === minS64 && src2 === negOne64
-
-    val src1Neg = src1(63)
-    val src2Neg = src2(63)
-    val src1Abs = Mux(src1Neg, twos(src1), src1)
-    val src2Abs = Mux(src2Neg, twos(src2), src2)
-    val safeSrc2Abs = Mux(src2Abs === 0.U, 1.U(64.W), src2Abs)
-    val quotAbs = src1Abs / safeSrc2Abs
-    val remAbs = src1Abs % safeSrc2Abs
-    val quotS = Mux(src1Neg ^ src2Neg, twos(quotAbs), quotAbs)
-    val remS = Mux(src1Neg, twos(remAbs), remAbs)
-    val quotU = src1 / Mux(divByZero, 1.U(64.W), src2)
-    val remU = src1 % Mux(divByZero, 1.U(64.W), src2)
-
-    val minS32 = "h80000000".U(32.W)
-    val negOne32 = "hffffffff".U(32.W)
-    val allOnes32 = "hffffffff".U(32.W)
-    val divwByZero = src2w === 0.U
-    val divwOverflow = src1w === minS32 && src2w === negOne32
-
-    val src1wNeg = src1w(31)
-    val src2wNeg = src2w(31)
-    val src1wAbs = Mux(src1wNeg, twos(src1w), src1w)
-    val src2wAbs = Mux(src2wNeg, twos(src2w), src2w)
-    val safeSrc2wAbs = Mux(src2wAbs === 0.U, 1.U(32.W), src2wAbs)
-    val quotwAbs = src1wAbs / safeSrc2wAbs
-    val remwAbs = src1wAbs % safeSrc2wAbs
-    val quotwS = Mux(src1wNeg ^ src2wNeg, twos(quotwAbs), quotwAbs)
-    val remwS = Mux(src1wNeg, twos(remwAbs), remwAbs)
-    val quotwU = src1w / Mux(divwByZero, 1.U(32.W), src2w)
-    val remwU = src1w % Mux(divwByZero, 1.U(32.W), src2w)
-
-    MuxLookup(op, 0.U(64.W))(Seq(
-      MduOp.div -> Mux(divByZero, allOnes64, Mux(divOverflow, minS64, quotS)),
-      MduOp.divu -> Mux(divByZero, allOnes64, quotU),
-      MduOp.rem -> Mux(divByZero, src1, Mux(divOverflow, 0.U(64.W), remS)),
-      MduOp.remu -> Mux(divByZero, src1, remU),
-      MduOp.divw -> sext32(Mux(divwByZero, allOnes32, Mux(divwOverflow, minS32, quotwS))),
-      MduOp.divuw -> sext32(Mux(divwByZero, allOnes32, quotwU)),
-      MduOp.remw -> sext32(Mux(divwByZero, src1w, Mux(divwOverflow, 0.U(32.W), remwS))),
-      MduOp.remuw -> sext32(Mux(divwByZero, src1w, remwU))
-    ))
-  }
 }
 
 class MulPipeline(implicit p: CoreParams) extends Module {
@@ -187,28 +135,117 @@ class DivUnit(implicit p: CoreParams) extends Module {
     val out = Valid(new MduWriteback)
   })
 
-  val busyReg = RegInit(false.B)
-  val doneReg = RegInit(false.B)
-  val count = RegInit(0.U(4.W))
+  val sIdle :: sRun :: sDone :: Nil = Enum(3)
+  val state = RegInit(sIdle)
+
+  val opReg = RegInit(MduOp.div)
+  val isWordReg = RegInit(false.B)
+  val isRemReg = RegInit(false.B)
+  val negQuotReg = RegInit(false.B)
+  val negRemReg = RegInit(false.B)
+  val iterReg = RegInit(0.U(7.W))
+  val dividendReg = RegInit(0.U(64.W))
+  val divisorReg = RegInit(0.U(127.W))
+  val quotReg = RegInit(0.U(64.W))
   val wbReg = RegInit(0.U.asTypeOf(new MduWriteback))
 
-  io.busy := busyReg
-  io.out.valid := doneReg
+  io.busy := state === sRun
+  io.out.valid := state === sDone
   io.out.bits := wbReg
 
-  doneReg := false.B
-  when(io.start && !busyReg) {
+  def twos(x: UInt): UInt = (~x).asUInt + 1.U(x.getWidth.W)
+  def sext32(x: UInt): UInt = Cat(Fill(32, x(31)), x)
+
+  val startIsWord = io.op === MduOp.divw || io.op === MduOp.divuw ||
+    io.op === MduOp.remw || io.op === MduOp.remuw
+  val startIsRem = io.op === MduOp.rem || io.op === MduOp.remu ||
+    io.op === MduOp.remw || io.op === MduOp.remuw
+  val startIsSigned = io.op === MduOp.div || io.op === MduOp.rem ||
+    io.op === MduOp.divw || io.op === MduOp.remw
+
+  val src1w = io.src1(31, 0)
+  val src2w = io.src2(31, 0)
+  val src1Neg = startIsSigned && Mux(startIsWord, src1w(31), io.src1(63))
+  val src2Neg = startIsSigned && Mux(startIsWord, src2w(31), io.src2(63))
+  val src1Abs64 = Mux(src1Neg, twos(io.src1), io.src1)
+  val src2Abs64 = Mux(src2Neg, twos(io.src2), io.src2)
+  val src1Abs32 = Mux(src1Neg, twos(src1w), src1w)
+  val src2Abs32 = Mux(src2Neg, twos(src2w), src2w)
+  val dividendInit = Mux(startIsWord, Cat(0.U(32.W), src1Abs32), src1Abs64)
+  val divisorInit = Mux(
+    startIsWord,
+    Cat(0.U(64.W), src2Abs32, 0.U(31.W)),
+    Cat(src2Abs64, 0.U(63.W))
+  )
+
+  val minS64 = "h8000000000000000".U(64.W)
+  val negOne64 = "hffffffffffffffff".U(64.W)
+  val minS32 = "h80000000".U(32.W)
+  val negOne32 = "hffffffff".U(32.W)
+  val divByZero = Mux(startIsWord, src2w === 0.U, io.src2 === 0.U)
+  val divOverflow = startIsSigned && Mux(
+    startIsWord,
+    src1w === minS32 && src2w === negOne32,
+    io.src1 === minS64 && io.src2 === negOne64
+  )
+  val divByZeroResult = Mux(
+    startIsRem,
+    Mux(startIsWord, sext32(src1w), io.src1),
+    "hffffffffffffffff".U(64.W)
+  )
+  val overflowResult = Mux(
+    startIsRem,
+    0.U(64.W),
+    Mux(startIsWord, sext32(minS32), minS64)
+  )
+  val specialResult = Mux(divByZero, divByZeroResult, overflowResult)
+
+  def acceptStart(): Unit = {
     wbReg.rd := io.rd
     wbReg.vslot := io.vslot
-    wbReg.data := MduCalc.divResult(io.src1, io.src2, io.op)
-    busyReg := true.B
-    count := 7.U
-  }.elsewhen(busyReg) {
-    when(count === 0.U) {
-      busyReg := false.B
-      doneReg := true.B
+    opReg := io.op
+    isWordReg := startIsWord
+    isRemReg := startIsRem
+    negQuotReg := src1Neg ^ src2Neg
+    negRemReg := src1Neg
+    dividendReg := dividendInit
+    divisorReg := divisorInit
+    quotReg := 0.U
+    iterReg := Mux(startIsWord, 32.U, 64.U)
+
+    when(divByZero || divOverflow) {
+      wbReg.data := specialResult
+      state := sDone
     }.otherwise {
-      count := count - 1.U
+      state := sRun
+    }
+  }
+
+  val dividendWide = Cat(0.U(63.W), dividendReg)
+  val canSubtract = dividendWide >= divisorReg
+  val subResult = dividendWide - divisorReg
+  val nextDividend = Mux(canSubtract, subResult(63, 0), dividendReg)
+  val nextQuot = Cat(quotReg(62, 0), canSubtract)
+  val correctedQuot = Mux(negQuotReg, twos(nextQuot), nextQuot)
+  val correctedRem = Mux(negRemReg, twos(nextDividend), nextDividend)
+  val result64 = Mux(isRemReg, correctedRem, correctedQuot)
+  val resultData = Mux(isWordReg, sext32(result64(31, 0)), result64)
+
+  when(state === sRun) {
+    dividendReg := nextDividend
+    divisorReg := Cat(0.U(1.W), divisorReg(126, 1))
+    quotReg := nextQuot
+    iterReg := iterReg - 1.U
+
+    when(iterReg === 1.U) {
+      wbReg.data := resultData
+      state := sDone
+    }
+  }.otherwise {
+    when(io.start) {
+      acceptStart()
+    }.elsewhen(state === sDone) {
+      state := sIdle
     }
   }
 }
