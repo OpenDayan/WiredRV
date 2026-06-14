@@ -158,8 +158,12 @@ class BackendLsu(implicit p: CoreParams) extends Module {
     Module(new SRAMTemplate(new DCTag, p.dcacheSets, way = 1, singlePort = true, hasMbist = true))
   )
   val dc_datas = Seq.fill(p.dcacheWays)(
-    Module(new SRAMTemplate(UInt(p.xlen.W), dataSetCount, way = 1, singlePort = true, useBitmask = true, hasMbist = true))
+    Module(new SRAMTemplate(UInt(8.W), dataSetCount, way = bytesPerWord, singlePort = true, hasMbist = true))
   )
+  private def splitWordToBytes(word: UInt): Vec[UInt] =
+    VecInit((0 until bytesPerWord).map(i => word(8 * (i + 1) - 1, 8 * i)))
+  private def packBytesToWord(bytes: Vec[UInt]): UInt =
+    Cat((0 until bytesPerWord).reverse.map(bytes(_)))
   private val dcMbistPipeline = MbistPipeline.PlaceMbistPipeline(1, "MbistPipelineWiredRVBackendLsu", place = true)
   val store_queue = RegInit(VecInit(Seq.fill(2)(0.U.asTypeOf(new StoreQueueEntry))))
   val sq_has_entry = store_queue(0).valid || store_queue(1).valid
@@ -237,7 +241,7 @@ class BackendLsu(implicit p: CoreParams) extends Module {
   val dc_data_w_valid = WireInit(VecInit(Seq.fill(p.dcacheWays)(false.B)))
   val dc_data_w_data = Wire(Vec(p.dcacheWays, UInt(p.xlen.W)))
   val dc_data_w_idx = Wire(Vec(p.dcacheWays, UInt(dataIdxBits.W)))
-  val dc_data_w_mask = Wire(Vec(p.dcacheWays, UInt(p.xlen.W)))
+  val dc_data_w_mask = Wire(Vec(p.dcacheWays, UInt(bytesPerWord.W)))
   for (i <- 0 until p.dcacheWays) {
     dc_tag_w_data(i) := 0.U.asTypeOf(new DCTag)
     dc_tag_w_set(i) := 0.U
@@ -266,7 +270,7 @@ class BackendLsu(implicit p: CoreParams) extends Module {
     dc_datas(i).io.r.req.valid := false.B
     dc_datas(i).io.r.req.bits := 0.U.asTypeOf(dc_datas(i).io.r.req.bits)
     dc_datas(i).io.w.req.valid := dc_data_w_valid(i)
-    dc_datas(i).io.w.req.bits.apply(dc_data_w_data(i), dc_data_w_idx(i), 1.U, dc_data_w_mask(i))
+    dc_datas(i).io.w.req.bits.apply(splitWordToBytes(dc_data_w_data(i)), dc_data_w_idx(i), dc_data_w_mask(i))
   }
 
   val d_dcache_set = p.dcacheGetSet(io.d.addr)
@@ -277,6 +281,7 @@ class BackendLsu(implicit p: CoreParams) extends Module {
     dc_datas(i).io.r.req.valid := io.d.readData
     dc_datas(i).io.r.req.bits.apply(d_dcache_idx)
   }
+  val dc_data_r_words = VecInit((0 until p.dcacheWays).map(i => packBytesToWord(dc_datas(i).io.r.resp.data)))
 
   val e_uop = io.e.uop
   val e_addr = io.e.addr
@@ -306,7 +311,7 @@ class BackendLsu(implicit p: CoreParams) extends Module {
   val e_hit_tag = Mux(e_hit_way === 0.U, dc_tags(0).io.r.resp.data(0), dc_tags(1).io.r.resp.data(0))
   val e_victim_tag = Mux(e_replace_way === 0.U, dc_tags(0).io.r.resp.data(0), dc_tags(1).io.r.resp.data(0))
   val e_victim_valid = dc_valid(e_replace_way)(e_set)
-  val e_cache_word = Mux(e_way_hits(0), dc_datas(0).io.r.resp.data(0), dc_datas(1).io.r.resp.data(0))
+  val e_cache_word = Mux(e_way_hits(0), dc_data_r_words(0), dc_data_r_words(1))
 
   def storeHitsLoad(s: StoreQueueEntry, loadAddr: UInt): Bool =
     s.valid && sameWordAddr(s.addr, loadAddr)
@@ -402,7 +407,7 @@ class BackendLsu(implicit p: CoreParams) extends Module {
         dc_data_w_valid(i) := true.B
         dc_data_w_idx(i) := sq_drain_entry.idx
         dc_data_w_data(i) := sq_drain_entry.data
-        dc_data_w_mask(i) := byteMask(sq_drain_entry.mask)
+        dc_data_w_mask(i) := sq_drain_entry.mask
         dc_tag_w_valid(i) := true.B
         dc_tag_w_set(i) := sq_drain_entry.set
         dc_tag_w_data(i) := tag_data
@@ -640,7 +645,7 @@ class BackendLsu(implicit p: CoreParams) extends Module {
           dc_data_w_valid(i) := true.B
           dc_data_w_idx(i) := refill_idx
           dc_data_w_data(i) := refill_data
-          dc_data_w_mask(i) := Fill(p.xlen, 1.U)
+          dc_data_w_mask(i) := Fill(bytesPerWord, 1.U)
         }
       }
     }
@@ -678,7 +683,7 @@ class BackendLsu(implicit p: CoreParams) extends Module {
 
   when(r_state === DCacheRefillState.cmoWriteback) {
     when(!r_wb_word_valid) {
-      r_wb_word := Mux(r_way === 0.U, dc_datas(0).io.r.resp.data(0), dc_datas(1).io.r.resp.data(0))
+      r_wb_word := Mux(r_way === 0.U, dc_data_r_words(0), dc_data_r_words(1))
       r_wb_word_valid := true.B
       r_a_valid := true.B
       r_wb_beat := 0.U
@@ -840,7 +845,7 @@ class BackendLsu(implicit p: CoreParams) extends Module {
     val m_word1_hit_way = PriorityEncoder(m_word1_hits)
     m_word1_hit := m_word1_raw_hit
     m_word1_way := m_word1_hit_way
-    m_word1_data := Mux(m_word1_hit_way === 0.U, dc_datas(0).io.r.resp.data(0), dc_datas(1).io.r.resp.data(0))
+    m_word1_data := Mux(m_word1_hit_way === 0.U, dc_data_r_words(0), dc_data_r_words(1))
     m_state := MisalignedState.busCheck
   }
 
