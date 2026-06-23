@@ -25,9 +25,9 @@ External repositories live under `deps/`:
 ```text
 deps/difftest
 deps/riscv-tests
-deps/LaomaSubsystem
-deps/LaomaSubsystem/rocket-chip
-deps/LaomaSubsystem/xs-utils
+deps/AxiInfra
+deps/AxiInfra/dep/rocket-chip
+deps/AxiInfra/dep/xs-utils
 ```
 
 Compile Scala/Chisel:
@@ -64,26 +64,28 @@ Run one `riscv-tests` workload with NEMU difftest:
 EMU_MAX_CYCLES=500000 make difftest-riscv-test TEST=simple
 ```
 
-## LaomaSubsystem AXI Dependency
+## AxiInfra AXI Dependency
 
 WiredRV uses AXI bundle/type definitions and the fixed `AxiNarrowToWide`
-implementation from the `deps/LaomaSubsystem` submodule. The submodule
-should point at the `dev/axi5` branch commit that contains:
+implementation from the `deps/AxiInfra` submodule. The submodule should point
+at the `dev/axi5` branch commit:
 
 ```text
-Initial commit: add AXI5 Crossbar design files
+56964049b0be78ce5d653161d711395e418d8852
 ```
 
-The local `src/main/scala/lmss/axi/AxiCompat.scala` compatibility file has been
-removed to avoid conflicts with the Laoma definitions. The active AXI sources
-are compiled from:
+The active AXI sources are compiled from the `xs.infra.axi` package:
 
 ```text
-deps/LaomaSubsystem/src/main/scala/lmss/axi/package.scala
-deps/LaomaSubsystem/src/main/scala/lmss/axi/AxiNarrowToWide.scala
-deps/LaomaSubsystem/rocket-chip/dependencies/cde/cde/src
-deps/LaomaSubsystem/xs-utils/src/main/scala/xs/utils
+deps/AxiInfra/src/main/scala/xs/infra/axi/package.scala
+deps/AxiInfra/src/main/scala/xs/infra/axi/AxiNarrowToWide.scala
+deps/AxiInfra/dep/cde/cde/src
+deps/AxiInfra/dep/xs-utils/src/main/scala/xs/utils
 ```
+
+WiredRV's Mill build uses the top-level `deps/AxiInfra/dep/*` dependencies
+directly. Nested `deps/AxiInfra/dep/xs-utils/dep/*` submodules are not a
+WiredRV build entry.
 
 ## Makefile Targets
 

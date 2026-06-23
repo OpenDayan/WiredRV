@@ -2,10 +2,10 @@ package wiredrv.bus
 
 import chisel3._
 import chisel3.util._
-import lmss.axi._
+import xs.infra.axi._
 import wiredrv.CoreParams
 
-class LmssAxiXbar(mstParams: Seq[AxiParams])(implicit p: CoreParams)
+class WiredAxiXbar(mstParams: Seq[AxiParams])(implicit p: CoreParams)
     extends Module {
   require(mstParams.nonEmpty, "AXI crossbar needs at least one upstream port")
   require(mstParams.forall(_.dataBits == mstParams.head.dataBits), "all upstream AXI ports must have the same data width")

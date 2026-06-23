@@ -5,7 +5,7 @@ import chisel3._
 import chisel3.util._
 import difftest._
 import difftest.common.DifftestMem
-import lmss.axi._
+import xs.infra.axi._
 import wiredrv._
 import wiredrv.backend.TensorResp
 import wiredrv.frontend._

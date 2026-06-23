@@ -2,7 +2,7 @@ package wiredrv
 
 import chisel3._
 import chisel3.util._
-import lmss.axi._
+import xs.infra.axi._
 import wiredrv.bus._
 import wiredrv.backend._
 import wiredrv.frontend._
@@ -62,7 +62,7 @@ class WiredCore(implicit p: CoreParams) extends Module {
   val dmemToAxi = Module(new BusToAxi(p.innerBusWidth))
   val dmemAtomicToAxi = Module(new BusToAxi(p.outerBusWidth))
   val dmemWidthUp = Module(new AxiNarrowToWide(innerAxi, outerAxi, buffer = 4))
-  val xbar = Module(new LmssAxiXbar(Seq(outerAxi, outerAxi, outerAxi)))
+  val xbar = Module(new WiredAxiXbar(Seq(outerAxi, outerAxi, outerAxi)))
 
   private val sramBroadcast = SramHelper.genBroadCastBundleTop()
   sramBroadcast := io.dft.toSramBroadCastBundle

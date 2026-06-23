@@ -6,13 +6,13 @@ import mill.scalalib._
 
 val workspaceRoot = BuildCtx.workspaceRoot
 val depsRoot = workspaceRoot / "deps"
-val laomaSubsystemPath = depsRoot / "LaomaSubsystem"
-val laomaRocketChipPath = laomaSubsystemPath / "rocket-chip"
-val laomaCdePath = laomaRocketChipPath / "dependencies" / "cde" / "cde"
-val laomaDiplomacyPath = laomaRocketChipPath / "dependencies" / "diplomacy" / "diplomacy"
-val laomaHardfloatPath = laomaRocketChipPath / "dependencies" / "hardfloat" / "hardfloat"
-val laomaXsUtilsPath = laomaSubsystemPath / "xs-utils"
-val laomaChiselPath = laomaXsUtilsPath / "dep" / "chisel"
+val axiInfraPath = depsRoot / "AxiInfra"
+val axiInfraRocketChipPath = axiInfraPath / "dep" / "rocket-chip"
+val axiInfraCdePath = axiInfraPath / "dep" / "cde" / "cde"
+val axiInfraDiplomacyPath = axiInfraPath / "dep" / "diplomacy" / "diplomacy"
+val axiInfraHardfloatPath = axiInfraPath / "dep" / "hardfloat" / "hardfloat"
+val axiInfraXsUtilsPath = axiInfraPath / "dep" / "xs-utils"
+val axiInfraChiselPath = axiInfraPath / "dep" / "chisel"
 val difftestPath = depsRoot / "difftest"
 
 val defaultVerilogTop = "wiredrv.harness.WiredCoreHarnessTop"
@@ -127,7 +127,7 @@ object deps extends Module {
 
   object chiselFirrtl extends Cross[ChiselFirrtl](Seq(v.scalaBinaryVersion))
   trait ChiselFirrtl extends LocalCrossSbtModule {
-    override def moduleDir = laomaChiselPath / "firrtl"
+    override def moduleDir = axiInfraChiselPath / "firrtl"
 
     override def mvnDeps = super.mvnDeps() ++ Seq(
       v.scoptIvy,
@@ -147,14 +147,14 @@ object deps extends Module {
 
   object chiselMacros extends Cross[ChiselMacros](Seq(v.scalaBinaryVersion))
   trait ChiselMacros extends LocalCrossSbtModule {
-    override def moduleDir = laomaChiselPath / "macros"
+    override def moduleDir = axiInfraChiselPath / "macros"
 
     override def mvnDeps = super.mvnDeps() ++ Seq(v.scalaReflectIvy)
   }
 
   object chiselCore extends Cross[ChiselCore](Seq(v.scalaBinaryVersion))
   trait ChiselCore extends LocalCrossSbtModule {
-    override def moduleDir = laomaChiselPath / "core"
+    override def moduleDir = axiInfraChiselPath / "core"
 
     override def moduleDeps = super.moduleDeps ++ Seq(
       chiselFirrtl(v.scalaBinaryVersion),
@@ -196,7 +196,7 @@ object deps extends Module {
 
   object chiselSvsim extends Cross[ChiselSvsim](Seq(v.scalaBinaryVersion))
   trait ChiselSvsim extends LocalCrossSbtModule {
-    override def moduleDir = laomaChiselPath / "svsim"
+    override def moduleDir = axiInfraChiselPath / "svsim"
 
     override def compileMvnDeps = super.compileMvnDeps() ++ Seq(v.unrollAnnotationIvy)
     override def scalacPluginMvnDeps = super.scalacPluginMvnDeps() ++ Seq(v.unrollPluginIvy)
@@ -208,7 +208,7 @@ object deps extends Module {
 
   object chiselLib extends Cross[ChiselLib](Seq(v.scalaBinaryVersion))
   trait ChiselLib extends LocalCrossSbtModule {
-    override def moduleDir = laomaChiselPath
+    override def moduleDir = axiInfraChiselPath
 
     override def moduleDeps = super.moduleDeps ++ Seq(
       chiselCore(v.scalaBinaryVersion),
@@ -220,21 +220,21 @@ object deps extends Module {
   }
 
   object cde extends DepScalaModule {
-    override def moduleDir = laomaCdePath
+    override def moduleDir = axiInfraCdePath
   }
 
   object diplomacy extends DepScalaModule {
-    override def moduleDir = laomaDiplomacyPath
+    override def moduleDir = axiInfraDiplomacyPath
 
     override def moduleDeps = super.moduleDeps ++ Seq(cde)
   }
 
   object hardfloat extends DepSbtModule {
-    override def moduleDir = laomaHardfloatPath
+    override def moduleDir = axiInfraHardfloatPath
   }
 
   object rocketChip extends DepSbtModule {
-    override def moduleDir = laomaRocketChipPath
+    override def moduleDir = axiInfraRocketChipPath
 
     override def mvnDeps = super.mvnDeps() ++ Seq(
       v.json4sJacksonIvy,
@@ -249,14 +249,14 @@ object deps extends Module {
     )
 
     object macros extends DepSbtModule {
-      override def moduleDir = laomaRocketChipPath / "macros"
+      override def moduleDir = axiInfraRocketChipPath / "macros"
 
       override def mvnDeps = super.mvnDeps() ++ Seq(v.scalaReflectIvy)
     }
   }
 
   object xsUtils extends DepSbtModule {
-    override def moduleDir = laomaXsUtilsPath
+    override def moduleDir = axiInfraXsUtilsPath
 
     override def moduleDeps = super.moduleDeps ++ Seq(
       rocketChip,
@@ -264,8 +264,8 @@ object deps extends Module {
     )
   }
 
-  object laomaSubsystem extends DepSbtModule {
-    override def moduleDir = laomaSubsystemPath
+  object axiInfra extends DepSbtModule {
+    override def moduleDir = axiInfraPath
 
     override def moduleDeps = super.moduleDeps ++ Seq(
       rocketChip,
@@ -288,7 +288,7 @@ trait WiredRV
   def difftestModule = deps.difftest
 
   override def moduleDeps = super.moduleDeps ++ Seq(
-    deps.laomaSubsystem,
+    deps.axiInfra,
     deps.xsUtils
   )
 

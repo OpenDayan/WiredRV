@@ -2,7 +2,7 @@ package wiredrv.bus
 
 import chisel3._
 import chisel3.util._
-import lmss.axi._
+import xs.infra.axi._
 import wiredrv.CoreParams
 
 class BusToAxi(width: Int)(implicit p: CoreParams) extends Module {

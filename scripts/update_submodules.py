@@ -8,16 +8,29 @@ SUBMODULES_MAP = {
     ".": [
         "deps/difftest",
         "deps/riscv-tests",
-        "deps/LaomaSubsystem",
+        "deps/AxiInfra",
     ],
-    "deps/LaomaSubsystem": [
-        "rocket-chip",
-        "xs-utils",
+    "deps/AxiInfra": [
+        "dep/chisel",
+        "dep/cde",
+        "dep/diplomacy",
+        "dep/hardfloat",
+        "dep/rocket-chip",
+        "dep/xs-utils",
     ],
-    "deps/LaomaSubsystem/rocket-chip": [
+    "deps/AxiInfra/dep/hardfloat": [
+        "berkeley-softfloat-3",
+        "berkeley-testfloat-3",
+    ],
+    "deps/AxiInfra/dep/rocket-chip": [
         "dependencies/cde",
+        "dependencies/chisel",
         "dependencies/diplomacy",
         "dependencies/hardfloat",
+    ],
+    "deps/AxiInfra/dep/rocket-chip/dependencies/hardfloat": [
+        "berkeley-softfloat-3",
+        "berkeley-testfloat-3",
     ],
 }
 
