@@ -7,7 +7,7 @@ as a small Makefile wrapper over Mill and the difftest Makefile.
 ## Environment
 
 - `NOOP_HOME` defaults to the repository root.
-- `NEMU_HOME` defaults to `/workspace/NEMU`.
+- `NEMU_HOME` defaults to `$(NOOP_HOME)/../NEMU`; for a checkout at `~/code/WiredRV`, this is `~/code/NEMU`.
 - The RISC-V toolchain prefix defaults to
   `/public/riscv-tools/rv64ima/bin/riscv64-unknown-elf`.
 - The project currently keeps `Chisel 7.9.0 + Mill 1.0.4`.
@@ -131,8 +131,10 @@ Clean targets:
 Use:
 
 ```bash
-make -C /workspace/NEMU riscv64-nutshell-ref_defconfig
-make -C /workspace/NEMU -j2
+make nemu-ref
+
+# Or use an explicit NEMU checkout:
+NEMU_HOME=/path/to/NEMU make nemu-ref
 ```
 
 Do not use `riscv64-xs-ref_defconfig` for the current DUT. The exported
@@ -190,7 +192,7 @@ Directly run the emulator:
 ```bash
 ./build/emu \
   -i build/workloads/rv64ui-simple.elf \
-  --diff /workspace/NEMU/build/riscv64-nemu-interpreter-so \
+  --diff ../NEMU/build/riscv64-nemu-interpreter-so \
   -I 200000
 ```
 
@@ -199,7 +201,7 @@ Limit maximum cycles:
 ```bash
 ./build/emu \
   -i build/workloads/rv64ui-simple.elf \
-  --diff /workspace/NEMU/build/riscv64-nemu-interpreter-so \
+  --diff ../NEMU/build/riscv64-nemu-interpreter-so \
   -I 200000 \
   -C 500000
 ```
@@ -214,7 +216,7 @@ Options:
 The underlying CLI launch command is equivalent to:
 
 ```bash
-./build/emu -i build/workloads/rv64ui-simple.elf --diff /workspace/NEMU/build/riscv64-nemu-interpreter-so -I 200000 --cli
+./build/emu -i build/workloads/rv64ui-simple.elf --diff ../NEMU/build/riscv64-nemu-interpreter-so -I 200000 --cli
 ```
 
 Useful CLI commands:

@@ -167,7 +167,7 @@ help:
 	@echo "  MILL_FORK_XMX=$(MILL_FORK_XMX) MILL_FORK_XSS=$(MILL_FORK_XSS)"
 
 deps:
-	./scripts/update_submodules.py
+	python3 ./scripts/update_submodules.py
 
 compile:
 	$(MILL) '$(MILL_WIREDRV_TARGET).compile'
