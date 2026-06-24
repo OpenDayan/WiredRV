@@ -622,7 +622,7 @@ class Backend(implicit p: CoreParams) extends Module {
   lsu.io.w.victimValid := w_victim_valid
   lsu.io.w.storeEntry := w_store_entry
   lsu.io.w.longWbValid := long_wb_busy_for_lsu
-  val w_is_fence_i = w_uop.inst === RV64IInstructions.FENCE_I.value.U
+  val w_is_fence_i = w_uop.inst(6, 0) === "b0001111".U && w_uop.inst(14, 12) === "b001".U
   val w_is_mret = w_uop.info.fuType === FuType.csr && w_uop.info.fuOpType === CsrOp.mret
   val w_mret_commit = w_can_commit && !w_trap && w_is_mret
   val w_flush_pipe = w_can_commit && !w_trap && !w_mret_commit && w_uop.info.flushPipe
