@@ -169,19 +169,13 @@ Build NEMU reference:
 make nemu-ref
 ```
 
-Build a waveform-capable CLI emulator:
-
-```bash
-make emu-cli WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF=Nemu
-```
-
-Build and start CLI:
+Build and start the interactive CLI emulator:
 
 ```bash
 make cli TEST=simple WITH_CHISELDB=0 WITH_CONSTANTIN=0 REF=Nemu
 ```
 
-Start an already built CLI:
+Start an already built CLI emulator:
 
 ```bash
 make run-cli TEST=simple
@@ -213,26 +207,18 @@ Options:
 
 ## CLI Notes
 
-The underlying CLI launch command is equivalent to:
+The CLI accepts these commands:
 
-```bash
-./build/emu -i build/workloads/rv64ui-simple.elf --diff ../NEMU/build/riscv64-nemu-interpreter-so -I 200000 --cli
-```
+- `help`: show available CLI commands.
+- `status`: print cycle, instruction count, trap code, and finish state.
+- `n <N>`: run `N` cycles; `N` defaults to 1.
+- `ni <N>`: run until `N` more instructions commit; `N` defaults to 1.
+- `c`: continue until simulation finishes.
+- `q` / `quit` / `exit`: exit the CLI cleanly.
 
-Useful CLI commands:
-
-- `n <N>`: run `N` cycles.
-- `nd <N>`: run `N` cycles, dump waveform, and start `surver`.
-- `c`: continue until simulation ends.
-- `d`: dump waveform and start `surver`.
-- `t`: toggle waveform tracing.
-- `status`: show current state.
-- `q` / `quit` / `exit`: exit.
-
-`make cli` and `make run-cli` use a trace-capable emulator by default. If
-`--wave-path` is not specified, the emulator creates a default waveform path.
-For `d`, `nd`, or `t`, rebuild with `make emu-cli ...` or explicitly set
-`EMU_TRACE=fst`.
+The first CLI version does not support dynamic waveform commands such as `d`,
+`nd`, or `t`. Use the one-shot wave debug flow below for waveform-oriented
+debugging.
 
 ## One-shot Wave Debug
 
@@ -260,7 +246,7 @@ SURVER_TOKEN=12345678 ./scripts/run-difftest-wave.sh simple
 WAVE_END=5000 ./scripts/run-difftest-wave.sh simple
 EMU_MAX_INSTR=500000 ./scripts/run-difftest-wave.sh simple
 EMU_MAX_CYCLES=500000 ./scripts/run-difftest-wave.sh simple
-NEMU_REF_SO=/workspace/NEMU/build/riscv64-nemu-interpreter-so ./scripts/run-difftest-wave.sh simple
+NEMU_HOME=/path/to/NEMU ./scripts/run-difftest-wave.sh simple
 ```
 
 Outputs:

@@ -1,7 +1,7 @@
 [submodule "deps/difftest"]
 	path = deps/difftest
-	url = https://github.com/2107647816-beep/difftest.git
-	branch = rts
+	url = https://git.rvnpu.cn/rvnpu/difftest.git
+	branch = wiredrv-rts-cli
 [submodule "deps/riscv-tests"]
 	path = deps/riscv-tests
 	url = https://git.rvnpu.cn/rvnpu/riscv-tests.git
