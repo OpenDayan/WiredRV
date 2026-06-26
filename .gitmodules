@@ -1,11 +1,11 @@
 [submodule "deps/difftest"]
 	path = deps/difftest
-	url = https://git.rvnpu.cn/rvnpu/difftest.git
+	url = ../difftest.git
 	branch = wiredrv-rts-cli
 [submodule "deps/riscv-tests"]
 	path = deps/riscv-tests
-	url = https://git.rvnpu.cn/rvnpu/riscv-tests.git
+	url = ../riscv-tests.git
 [submodule "deps/AxiInfra"]
 	path = deps/AxiInfra
-	url = https://git.rvnpu.cn/rvnpu/AxiInfra.git
+	url = ../AxiInfra.git
 	branch = dev/axi5
