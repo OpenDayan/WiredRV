@@ -38,6 +38,40 @@ def gen() = Task.Command {
   ).call(workspaceRoot, stdout = os.Inherit, stderr = os.Inherit)
 }
 
+object license extends Module {
+  private val marker = "SPDX-License-Identifier: MulanPSL-2.0"
+
+  private def scalaFiles =
+    os.walk(workspaceRoot / "src")
+      .filter(path => os.isFile(path) && path.ext == "scala")
+
+  def create() = Task.Command {
+    val header =
+      os.read(workspaceRoot / "license-header.txt").stripTrailing() + "\n\n"
+    val updated = scalaFiles.filter { path =>
+      val content = os.read(path)
+      if (content.contains(marker)) {
+        false
+      } else {
+        os.write.over(path, header + content)
+        true
+      }
+    }
+    Task.log.info(s"Added license header to ${updated.size} Scala files")
+  }
+
+  def check() = Task.Command {
+    val missing = scalaFiles.filterNot(path => os.read(path).contains(marker))
+    if (missing.nonEmpty) {
+      missing.foreach(path => Task.log.error(path.relativeTo(workspaceRoot).toString))
+      throw new RuntimeException(
+        s"${missing.size} Scala files are missing license headers"
+      )
+    }
+    Task.log.info("All Scala files contain license headers")
+  }
+}
+
 object v {
   val scalaBinaryVersion = "2.13"
   val chiselVersion = "7.9.0"
