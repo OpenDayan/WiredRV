@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Institute of Computing Technology, Chinese Academy of Sciences
  * SPDX-License-Identifier: MulanPSL-2.0
  *
- * WiredRV is licensed under the Mulan PSL v2.
+ * Dayan is licensed under the Mulan PSL v2.
  * You can use this software according to the terms and conditions of the Mulan PSL v2.
  * You may obtain a copy of Mulan PSL v2 at:
  *
@@ -14,12 +14,12 @@
  * See the Mulan PSL v2 for more details.
  */
 
-package wiredrv.bus
+package dayan.wiredrv.bus
 
 import chisel3._
 import chisel3.util._
 import xs.infra.axi._
-import wiredrv.CoreParams
+import dayan.wiredrv.CoreParams
 
 class BusToAxi(width: Int)(implicit p: CoreParams) extends Module {
   require(isPow2(width / 8), "Bus/AXI beat bytes must be power-of-two")

@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Institute of Computing Technology, Chinese Academy of Sciences
  * SPDX-License-Identifier: MulanPSL-2.0
  *
- * WiredRV is licensed under the Mulan PSL v2.
+ * Dayan is licensed under the Mulan PSL v2.
  * You can use this software according to the terms and conditions of the Mulan PSL v2.
  * You may obtain a copy of Mulan PSL v2 at:
  *
@@ -14,19 +14,19 @@
  * See the Mulan PSL v2 for more details.
  */
 
-package wiredrv
+package dayan.wiredrv
 
 import _root_.circt.stage.ChiselStage
 import chisel3._
 import difftest._
-import wiredrv.harness.{SimTop, WiredCoreHarnessTop}
+import dayan.wiredrv.harness.{SimTop, WiredCoreHarnessTop}
 
 import java.nio.charset.StandardCharsets
 import java.nio.file.{Files, Path, Paths}
 import scala.jdk.CollectionConverters._
 
 object Main {
-  private val DefaultTop = "wiredrv.harness.WiredCoreHarnessTop"
+  private val DefaultTop = "dayan.wiredrv.harness.WiredCoreHarnessTop"
 
   final case class GenOptions(
     top: String = DefaultTop,
@@ -67,7 +67,7 @@ object Main {
     case DefaultTop | "WiredCoreHarnessTop" | "harness.WiredCoreHarnessTop" =>
       new SimTop()
     case other =>
-      val className = if (other.contains(".")) other else s"wiredrv.$other"
+      val className = if (other.contains(".")) other else s"dayan.wiredrv.$other"
       Class
         .forName(className)
         .getConstructor()

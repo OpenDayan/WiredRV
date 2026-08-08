@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Institute of Computing Technology, Chinese Academy of Sciences
  * SPDX-License-Identifier: MulanPSL-2.0
  *
- * WiredRV is licensed under the Mulan PSL v2.
+ * Dayan is licensed under the Mulan PSL v2.
  * You can use this software according to the terms and conditions of the Mulan PSL v2.
  * You may obtain a copy of Mulan PSL v2 at:
  *
@@ -16,7 +16,7 @@
 
 // See README.md for license details.
 
-package wiredrv
+package dayan.wiredrv
 
 import chisel3._
 import chisel3.util._

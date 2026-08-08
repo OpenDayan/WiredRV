@@ -15,7 +15,7 @@ val axiInfraXsUtilsPath = axiInfraPath / "dep" / "xs-utils"
 val axiInfraChiselPath = axiInfraPath / "dep" / "chisel"
 val difftestPath = depsRoot / "difftest"
 
-val defaultVerilogTop = "wiredrv.harness.WiredCoreHarnessTop"
+val defaultVerilogTop = "dayan.wiredrv.harness.WiredCoreHarnessTop"
 
 def gen() = Task.Command {
   val top = sys.props.getOrElse("top", defaultVerilogTop)
@@ -29,7 +29,7 @@ def gen() = Task.Command {
   os.proc(
     Seq("java") ++ javaArgs ++ Seq(
       "-cp", classpath.mkString(java.io.File.pathSeparator),
-      "wiredrv.Main",
+      "dayan.wiredrv.Main",
       "--top", top,
       "--target-dir", targetDir,
       "--repl-seq-mem", replSeqMem,

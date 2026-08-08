@@ -49,7 +49,7 @@ generate a different zero-argument top module, pass its fully qualified class
 name:
 
 ```bash
-make gen VERILOG_TOP=wiredrv.Test
+make gen VERILOG_TOP=dayan.wiredrv.Test
 ```
 
 Generated RTL directories include `filelist.f` for downstream EDA integration.
@@ -158,7 +158,7 @@ make verilog
 Direct Mill entry matching the RVT template flow:
 
 ```bash
-./mill -Dtop=wiredrv.harness.WiredCoreHarnessTop gen
+./mill -Dtop=dayan.wiredrv.harness.WiredCoreHarnessTop gen
 ```
 
 Use `generated/WiredCoreHarnessTop/filelist.f` when handing the generated RTL
